@@ -139,7 +139,7 @@ function _train(){
         unset CUDA_DEVICE_MAX_CONNECTIONS
     fi
 
-    # 13b暂时关闭cinn
+    # 13b暂时关闭scale的融合
     if [[ "${MODEL_TYPE}" =~ "13b" ]]; then
         export FLAGS_deny_cinn_ops="scale"
     fi
