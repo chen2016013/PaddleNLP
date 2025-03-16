@@ -2355,10 +2355,11 @@ class DeepseekV2PretrainingCriterion(nn.Layer):
                     masked_lm_loss > 0, paddle.ones_like(masked_lm_loss), paddle.zeros_like(masked_lm_loss)
                 )
                 count = paddle.sum(binary_sequence)
-                if count == 0:
-                    loss = paddle.sum(masked_lm_loss * binary_sequence)
-                else:
-                    loss = paddle.sum(masked_lm_loss * binary_sequence) / count
+                loss = paddle.where(
+                    count == 0,
+                    paddle.sum(masked_lm_loss * binary_sequence),
+                    paddle.sum(masked_lm_loss * binary_sequence) / count,
+                )
                 return loss
 
         def add_loss(main_loss, loss):
