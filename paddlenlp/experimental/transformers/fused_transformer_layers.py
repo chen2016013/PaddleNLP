@@ -24,7 +24,6 @@ from paddle.framework import in_dynamic_mode
 from paddle.incubate.nn.functional import (
     fused_bias_act,
     fused_layer_norm,
-    fused_moe,
     fused_rms_norm,
     masked_multihead_attention,
     variable_length_memory_efficient_attention,
@@ -65,13 +64,16 @@ if paddle.is_compiled_with_cuda():
         from paddlenlp_ops import (
             dequant_int8,
             encode_rotary_qk,
+            fused_expert_moe,
+            moe_expert_dispatch,
+            moe_expert_ffn,
+            moe_expert_reduce,
             qkv_transpose_split,
             quant_int8,
             rebuild_padding,
             transpose_remove_padding,
             write_cache_kv,
         )
-
     except:
         pass
 
@@ -1297,22 +1299,19 @@ class FusedMultiTransformerBase(Layer):
             return scores
 
         if self.config.moe_config.topk_method is not None:
-            from paddle.incubate.nn.functional import moe_dispatch, moe_ffn, moe_reduce
-
             gate_out = paddle.matmul(tmp_out.cast("float32"), self.gate_weights[i])
             # 应用各种策略后重塑的 scores
             scores = get_moe_scores(gate_out, self.config.moe_config)
 
-            # topk 在 moe_dispatch 中
             (
                 permute_input,
                 token_nums_per_expert,
                 permute_indices_per_token,
                 top_k_weights,
                 top_k_indices,
-            ) = moe_dispatch(tmp_out, scores, self.config.moe_config.top_k, False, topk_only_mode=True)
+            ) = moe_expert_dispatch(tmp_out, scores, self.config.moe_config.top_k, False, topk_only_mode=True)
 
-            ffn_out = moe_ffn(
+            ffn_out = moe_expert_ffn(
                 permute_input,
                 token_nums_per_expert,
                 self.ffn1_weights[i],
@@ -1323,7 +1322,7 @@ class FusedMultiTransformerBase(Layer):
                 self.quant_type if hasattr(self, "quant_type") else "None",
             )
 
-            fused_moe_out = moe_reduce(
+            fused_moe_out = moe_expert_reduce(
                 ffn_out,
                 top_k_weights,
                 permute_indices_per_token,
@@ -1333,7 +1332,7 @@ class FusedMultiTransformerBase(Layer):
                 routed_scaling_factor=1.0,  # 在noaux_tc中做了
             )
         else:
-            fused_moe_out = fused_moe(
+            fused_moe_out = fused_expert_moe(
                 tmp_out,
                 self.gate_weights[i],
                 self.ffn1_weights[i],
@@ -1345,6 +1344,7 @@ class FusedMultiTransformerBase(Layer):
                 self.quant_type if hasattr(self, "quant_type") else "None",
                 self.config.moe_config.top_k,
                 self.config.moe_config.norm_topk_prob,
+                False,
             )
         return fused_moe_out
 
