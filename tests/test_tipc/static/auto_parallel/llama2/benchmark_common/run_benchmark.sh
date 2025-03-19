@@ -247,11 +247,11 @@ function _train(){
 }
 
 export FLAGS_selected_gpus="0,1,2,3,4,5,6,7"
-export NCCL_IB_DISABLE=0
+# export NCCL_IB_DISABLE=0
 export PYTHONPATH=$(dirname "$PWD"):$PYTHONPATH
 # https://github.com/PaddlePaddle/Paddle/pull/69410 合入影响
 # 如不设置参数为1,则默认选择不带tensor fusion的sharding stage1版本
-export FLAGS_enable_sharding_stage1_tensor_fusion=1
+# export FLAGS_enable_sharding_stage1_tensor_fusion=1
 
 # 只有13b的任务需要打开CUDA_DEVICE_MAX_CONNECTIONS,7b与70b关闭
 export CUDA_DEVICE_MAX_CONNECTIONS=1
