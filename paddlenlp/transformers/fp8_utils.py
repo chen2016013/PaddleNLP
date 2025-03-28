@@ -28,6 +28,7 @@ except ImportError:
 
 try:
     import deep_gemm
+    import FusedQuantOps as FQO
     import kitchen
     import kitchen.quantization_subchannel_block_hybrid
     import TokenDispatcherUtils as TDU
@@ -98,10 +99,11 @@ def kitchen_fp8_gemm(x_fp8, x_scale, w_fp8, w_scale, is_a_1d_scaled, is_b_1d_sca
 
 
 def dequantize_fp8_to_fp32(fp8_tensor, scale):
-    expanded_scale = paddle.repeat_interleave(scale, repeats=128, axis=-1)
-    # 非规整情况，需要截断
-    expanded_scale = expanded_scale[:, : fp8_tensor.shape[-1]]
-    return fp8_tensor.astype("float32") * expanded_scale
+    # expanded_scale = paddle.repeat_interleave(scale, repeats=128, axis=-1)
+    res = fp8_tensor.reshape([-1, 128]).astype("bfloat16") * (scale.reshape([-1, 1]))
+    res = res.reshape(fp8_tensor.shape)
+
+    return res
 
 
 class ExpertsGroupGemmNode:
@@ -235,8 +237,8 @@ class ExpertsGroupGemmNode:
         self, out_grad, out_grad_scale, o2, expert_w1_len, unzipped_expert_idx, dispatched_indices
     ):
         # regroup dout and o2:regroup之前需要dequant
-        out_grad_dequant = dequantize_fp8_to_fp32(out_grad, out_grad_scale)
-        out_grad_dequant_fp16 = out_grad_dequant.to(paddle.bfloat16)
+        out_grad_dequant_fp16 = FQO.fused_act_dequant(out_grad, out_grad_scale)
+        out_grad_dequant_fp16 = FQO.fused_act_dequant(out_grad, out_grad_scale)
         max_seq_len = max(self.tokens_per_expert)
         max_seq_len = ((max_seq_len + 127) // 128) * 128
         o2_regroup, out_grad_regroup = TDU.regroup_tokens(
@@ -244,46 +246,38 @@ class ExpertsGroupGemmNode:
         )  # int32
         return o2_regroup, out_grad_regroup, max_seq_len
 
-    def dequant_do1_and_regroup_do1_fp8_and_unzipped_tokens(
-        self, do1_fp8, do1_scale, unzipped_expert_idx, max_seq_len
-    ):
+    def dequant_do1_and_regroup_do1_fp8_and_unzipped_tokens(self, do1, unzipped_expert_idx, max_seq_len):
         # dequant do1_fp8 and regroup do1_fp8,unzipped_tokens
 
-        do1_dequant = dequantize_fp8_to_fp32(do1_fp8, do1_scale)
-        do1_dequant = do1_dequant.to(paddle.bfloat16)
-
-        intput_x = dequantize_fp8_to_fp32(self.unzipped_tokens, self.unzipped_scale)
-        intput_x = intput_x.to(paddle.bfloat16)
+        intput_x = FQO.fused_act_dequant(self.unzipped_tokens, self.unzipped_scale)
         input_x_regroup, do1_regroup = TDU.regroup_tokens(
-            intput_x, do1_dequant, unzipped_expert_idx, expert_num=4, token_max_per_expert=max_seq_len
+            intput_x, do1, unzipped_expert_idx, expert_num=4, token_max_per_expert=max_seq_len
         )
         return do1_regroup, input_x_regroup
 
     # ===== dw2 = deep_gemm(o2_t_fp8, do3_t_fp8)
     def bwd_down_weight(self, out_grad_regroup, o2_regroup, max_seq_len, expert_w2):
         # transpose o2
-        o2_t = o2_regroup.reshape([max_seq_len, len(expert_w2), -1]).transpose([1, 2, 0]).contiguous()
+        H2 = o2_regroup.shape[-1]
+        o2_t = o2_regroup.reshape([max_seq_len, -1])
 
-        # quant o2_t
-        o2_t = o2_t.reshape([len(expert_w2) * o2_t.shape[1], -1])
-
-        o2_t_fp8, o2_t_scale = kitchen_quant(
-            o2_t, backend=kitchen.ops.Backend.CUTLASS, is_1d_scaled=True, return_transpose=False
+        _, _, o2_t_fp8, o2_t_scale = kitchen_quant(
+            o2_t, backend=kitchen.ops.Backend.CUTLASS, is_1d_scaled=True, return_transpose=True
         )
-        o2_t_fp8 = o2_t_fp8.reshape([len(expert_w2), -1, o2_t_fp8.shape[-1]])
-        o2_t_scale = o2_t_scale.reshape([len(expert_w2), -1, o2_t_scale.shape[-1]])
+
+        o2_t_fp8 = o2_t_fp8.reshape([len(expert_w2), H2, -1])
+        o2_t_scale = o2_t_scale.reshape([len(expert_w2), H2, -1])
 
         # quant out_grad_regroup
-        out_grad_regroup = (
-            out_grad_regroup.reshape([max_seq_len, len(expert_w2), -1]).transpose([1, 2, 0]).contiguous()
-        )
-        out_grad_regroup = out_grad_regroup.reshape([-1, out_grad_regroup.shape[-1]])
-        out_grad_regroup_fp8, out_grad_regroup_scale = kitchen_quant(
-            out_grad_regroup, backend=kitchen.ops.Backend.CUTLASS, is_1d_scaled=True, return_transpose=False
+        H1 = out_grad_regroup.shape[-1]
+        out_grad_regroup = out_grad_regroup.reshape([max_seq_len, -1])
+        _, _, out_grad_regroup_fp8, out_grad_regroup_scale = kitchen_quant(
+            out_grad_regroup, backend=kitchen.ops.Backend.CUTLASS, is_1d_scaled=True, return_transpose=True
         )
 
-        out_grad_regroup_fp8 = out_grad_regroup_fp8.reshape([len(expert_w2), -1, out_grad_regroup_fp8.shape[-1]])
-        out_grad_regroup_scale = out_grad_regroup_scale.reshape([len(expert_w2), -1, out_grad_regroup_scale.shape[-1]])
+        out_grad_regroup_fp8 = out_grad_regroup_fp8.reshape([len(expert_w2), H1, -1])
+        out_grad_regroup_scale = out_grad_regroup_scale.reshape([len(expert_w2), H1, -1])
+
         for i in range(len(expert_w2)):
             if hasattr(expert_w2[i], "main_grad"):
                 expert_w2[i].main_grad = kitchen_fp8_gemm(
@@ -308,22 +302,24 @@ class ExpertsGroupGemmNode:
 
     def bwd_gate_up_weight(self, do1_regroup, input_x_regroup, max_seq_len, expert_w1):
         # quant intput_x
-        input_x_regroup = input_x_regroup.reshape([max_seq_len, len(expert_w1), -1]).transpose([1, 2, 0]).contiguous()
-        input_x_regroup = input_x_regroup.reshape([len(expert_w1) * input_x_regroup.shape[1], -1])
-        input_x_regroup_fp8, input_x_regroup_scale = kitchen_quant(
-            input_x_regroup, backend=kitchen.ops.Backend.CUTLASS, is_1d_scaled=True, return_transpose=False
+        H1 = input_x_regroup.shape[-1]
+        input_x_regroup = input_x_regroup.reshape([max_seq_len, -1])
+        _, _, ingroup_fp8, input_x_regroup_scale = kitchen_quant(
+            input_x_regroup, backend=kitchen.ops.Backend.CUTLASS, is_1d_scaled=True, return_transpose=True
         )
-        ingroup_fp8 = input_x_regroup_fp8.reshape([len(expert_w1), -1, input_x_regroup_fp8.shape[-1]])
-        input_x_regroup_scale = input_x_regroup_scale.reshape([len(expert_w1), -1, input_x_regroup_scale.shape[-1]])
+
+        ingroup_fp8 = ingroup_fp8.reshape([len(expert_w1), H1, -1])
+        input_x_regroup_scale = input_x_regroup_scale.reshape([len(expert_w1), H1, -1])
 
         # quant do1
-        do1_regroup = do1_regroup.reshape([max_seq_len, len(expert_w1), -1]).transpose([1, 2, 0]).contiguous()
-        do1_regroup = do1_regroup.reshape([-1, do1_regroup.shape[-1]])
-        do1_regroup_fp8, do1_regroup_scale = kitchen_quant(
-            do1_regroup, backend=kitchen.ops.Backend.CUTLASS, is_1d_scaled=True, return_transpose=False
+        do1_regroup = do1_regroup.reshape([max_seq_len, -1])
+        _, _, do1_regroup_fp8, do1_regroup_scale = kitchen_quant(
+            do1_regroup, backend=kitchen.ops.Backend.CUTLASS, is_1d_scaled=True, return_transpose=True
         )
+
         do1_regroup_fp8 = do1_regroup_fp8.reshape([len(expert_w1), -1, do1_regroup_fp8.shape[-1]])
         do1_regroup_scale = do1_regroup_scale.reshape([len(expert_w1), -1, do1_regroup_scale.shape[-1]])
+
         # dw1
         for i in range(len(expert_w1)):
             if hasattr(expert_w1[i], "main_grad"):
@@ -399,7 +395,7 @@ class ExpertsGroupGemmNode:
 
         # dequant do1_fp8 and regroup do1_fp8,unzipped_tokens
         do1_regroup, input_x_regroup = self.dequant_do1_and_regroup_do1_fp8_and_unzipped_tokens(
-            do1_fp8, do1_scale, unzipped_expert_idx, max_seq_len
+            do1, unzipped_expert_idx, max_seq_len
         )
 
         # dw1
@@ -454,7 +450,6 @@ class ExpertsNode:
             x_t_fp8, x_t_scale = kitchen_quant(
                 x_t, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=False
             )
-
             self.x_t_fp8s.append(x_t_fp8)
             self.x_t_scales.append(x_t_scale)
             self.o1s.append(o1)
@@ -484,7 +479,6 @@ class ExpertsNode:
             w2_fp8, w2_scale = kitchen_quant(
                 expert.w2, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=False, return_transpose=False
             )
-
             do2 = self.bwd_dowm_input(do3, do3_scale, w2_fp8, w2_scale)
             do1 = self.bwd_swiglu(o1, do2)
             dx = self.bwd_gate_up_input(do1, w1_fp8, w1_scale)

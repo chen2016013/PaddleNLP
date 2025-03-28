@@ -659,7 +659,6 @@ class MlpNode:
                 total_zipped_tokens=hs_fp8_dispatched.shape[0],
                 num_experts=4,
             )
-
             self.dispatched_probs = dispatched_probs
             self.dispatched_indices = dispatched_indices
             expert_out_zipped.stop_gradient = False
