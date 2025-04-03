@@ -32,6 +32,8 @@ from ..linear_utils import RowSequenceParallelLinear as PD_RowSequenceParallelLi
 from .configuration import DeepseekV2Config
 
 try:
+    import kitchen
+
     from .kernel import act_quant, fp8_gemm, weight_dequant
 except:
     pass
@@ -48,7 +50,6 @@ except ImportError:
 
 try:
     import deep_gemm
-    import kitchen
     import kitchen.quantization_subchannel_block_hybrid
     from kitchen.quantization import QParams, ScalingType
 except:
@@ -299,9 +300,9 @@ class LinearFP8KeepXFunc(paddle.autograd.PyLayer):
         x, weight = ctx.saved_tensor()
         dx_orig_shape = x.shape
         # padding
-        x = x.reshape( [-1, x.shape[-1]])
+        x = x.reshape([-1, x.shape[-1]])
         if x.shape[0] % 8 != 0:
-            x = paddle.concat([x, paddle.zeros([ 8 - (x.shape[0] % 8), x.shape[-1]], dtype=x.dtype)], axis=0)
+            x = paddle.concat([x, paddle.zeros([8 - (x.shape[0] % 8), x.shape[-1]], dtype=x.dtype)], axis=0)
 
         _, _, x_t_quant, x_t_scale = kitchen_quant(
             x, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=True
@@ -309,7 +310,6 @@ class LinearFP8KeepXFunc(paddle.autograd.PyLayer):
 
         # compute dx = mm(dout, w)
         dx = paddle.empty(x.shape, dout.dtype)
-       
 
         dout_quant, dout_scale = kitchen_quant(
             dout.reshape([-1, dout.shape[-1]]),
