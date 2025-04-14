@@ -139,9 +139,10 @@ function _train(){
         unset CUDA_DEVICE_MAX_CONNECTIONS
     fi
 
-    # 13b打开cinn时关闭scale op的融合
+    # 13b暂时关闭cinn，待性能有提升后再打开
     if [[ "${MODEL_TYPE}" =~ "13b" ]]; then
-        export FLAGS_deny_cinn_ops="scale"
+        unset FLAGS_use_cinn
+        unset FLAGS_dist_prim_all
     fi
 
     # Disable for hanging bug
