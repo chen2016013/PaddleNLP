@@ -183,6 +183,8 @@ def auto_tuning_with_compilation_grouped_gemm_masked(m, expected_m, n, k, num_gr
 
     # Extra checks for TMA store
     if num_groups > 1 and m > block_m:
+        while m % block_m != 0 and block_m > 128:
+            block_m = block_m // 2
         assert (
             m % block_m == 0
         ), f"For masked grouped GEMM, shape M should be multiple of the block M (current block M: {block_m})"
