@@ -178,7 +178,7 @@ def auto_tuning_with_compilation_grouped_gemm_masked(m, expected_m, n, k, num_gr
     if num_sms is None:
         num_sms = get_num_sms()
     num_sms, block_m, block_n, num_stages, tma_multicast_config, smem_config = get_best_configs(
-        expected_m, n, k, num_groups, num_sms
+        expected_m, n, k, num_groups, num_sms, is_grouped_masked=True
     )
 
     # Extra checks for TMA store
