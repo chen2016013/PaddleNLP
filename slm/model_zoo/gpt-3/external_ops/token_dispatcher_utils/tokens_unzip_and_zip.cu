@@ -244,7 +244,6 @@ __global__ void tokens_weighted_zip_kernel(
   }
 }
 
-
 template <bool MP = true>
 __global__ void tokens_zip_kernel(
     const phi::bfloat16 *__restrict__ unzipped_tokens_in,
@@ -638,6 +637,7 @@ void dispatch_tokens_zip(const paddle::Tensor &unzipped_tokens,
   block.x = 256;
 
   // Map data types to C++ types
+
   if (unzipped_tokens.dtype() == paddle::DataType::BFLOAT16) {
     if(zipped_probs_topk.dtype() == paddle::DataType::FLOAT32){
       tokens_zip_kernel<<<grid, block, 0, unzipped_tokens.stream()>>>(
@@ -773,6 +773,7 @@ std::vector<paddle::Tensor> tokens_zip(
                     sizeof(phi::bfloat16) * total_zipped_tokens_num * topk,
                     unzipped_token_probs.stream());
   }
+
   dispatch_tokens_zip(unzipped_tokens,
                       zipped_expertwise_rowmap,
                       expert_routemap_topk,
