@@ -26,10 +26,10 @@ from paddle import Tensor, nn
 from paddle.distributed.communication.group import Group
 
 from ..utils.log import logger
-from .fp8_utils import ExpertsGroupGemmNode, ExpertsNode
+from .fp8_utils import FuseMoeMlpNode
 from .fused_a2a import CombineNode, DispatchNode
 from .moe_gate import PretrainedMoEGate
-from .moe_utils import PermuteNode, UnPermuteNode, UnZipNode, ZipNode
+from .moe_utils import UnZipNode, ZipNode
 from .token_dispatcher import MoEFlexTokenDispatcher, PreDispatchNode
 
 DSV3_USE_FP8_GEMM = os.getenv("DSV3_USE_FP8_GEMM", "False").lower() == "true"
@@ -570,120 +570,137 @@ class Fp8CombineQuantNode:
 
 
 class MlpNode:
-    def __init__(self, custom_map, name="mlp_node"):
-        self.token_dispatcher = custom_map.token_dispatcher
+    """
+    The FusedMoeLayer class includes operations for unzipping, expert computation, and zipping.
+    """
+
+    def __init__(self, custom_map, max_topk, mem_efficient=False):
+        self.token_dispatcher = custom_map.dispatcher
         self.experts = custom_map.experts
-        self.permute_node = PermuteNode(self.token_dispatcher)
-        self.experts_node = ExpertsNode(self.experts, custom_map)
-        self.experts_group_gemm_node = ExpertsGroupGemmNode(self.experts, custom_map)
-        self.unpermute_node = UnPermuteNode(self.token_dispatcher)
-        self.name = name
+        self.experts_group_gemm_node = FuseMoeMlpNode(custom_map, mem_efficient=mem_efficient)
         self.unzip_node = UnZipNode(self.token_dispatcher)
         self.zip_node = ZipNode(self.token_dispatcher)
         self.dispatched_indices = None
         self.dispatched_probs = None
-        self.total_unzipped_tokens_num = None
-        self.unzipped_expert_idx = None
-        self.unzipped_scale = None
-        self.tokens_per_expert = None
-        self.router_topk = None
+        self.tokens_per_expert = self.token_dispatcher._comm_manager.tokens_per_expert_list
+        self.tokens_per_expert_tensor = paddle.to_tensor(self.tokens_per_expert, dtype="int32")
+        self.router_topk = max_topk
 
     def reset_statue(self):
-        self.token_permuted_indices = None
-        self.dispatched_probs = None
-        self.total_unzipped_tokens_num = None
-        self.unzipped_expert_idx = None
+        """
+        重置所有状态变量。
+
+        Args:
+            无。
+
+        Returns:
+            无。
+
+        """
         self.dispatched_indices = None
-        self.unzipped_scale = None
+        self.dispatched_probs = None
         self.tokens_per_expert = None
+        self.tokens_per_expert_tensor = None
         self.router_topk = None
 
     @paddle.no_grad()
     def forward(self, hs_2d_dispatched, dispatched_indices, dispatched_probs):
-        self.tokens_per_expert = self.token_dispatcher._comm_manager.tokens_per_expert
-        self.router_topk = self.token_dispatcher._comm_manager.router_topk
-        if DSV3_USE_FP8_GROUP_GEMM:
-            # 1 unzip
-            dispatched_indices = dispatched_indices.to(paddle.int32)
+        """
+        对输入数据进行前向传播计算。
 
-            self.dispatched_indices = dispatched_indices
-            (unzipped_tokens, zipped_expertwise_rowmap, unzipped_probs) = self.unzip_node.forward(
-                hs_2d_dispatched,
-                dispatched_indices,
-                dispatched_probs,
-                topk=self.router_topk,
-                num_experts=4,
-                max_tokens=max(self.tokens_per_expert),
-            )
-            hs_2d_dispatched._record_stream()
-            dispatched_indices._record_stream()
-            dispatched_probs._record_stream()
+        Args:
+            hs_2d_dispatched (Tensor): 表示被分派到各个专家的输入数据。
+            dispatched_indices (Tensor):表示输入数据被分派到的专家索引。
+            dispatched_probs (Tensor): 表示输入数据被分派到各个专家的概率。
 
-            # 2 experts
-            tokens_per_expert_list = []
-            for idx in range(len(self.tokens_per_expert)):
-                tokens_per_expert_list.append(
-                    paddle.full(shape=[1], fill_value=self.tokens_per_expert[idx], dtype="int32")
-                )
-            tokens_per_expert = paddle.concat(tokens_per_expert_list)
-            expert_out = self.experts_group_gemm_node.forward(unzipped_tokens, unzipped_probs, tokens_per_expert)
+        Returns:
+            Tensor: 经过前向传播计算后的输出数据。
 
-            # 3 zip
-            expert_out = expert_out.reshape([-1, expert_out.shape[-1]])
-            expert_out_zipped = self.zip_node.forward(
-                expert_out,
-                zipped_expertwise_rowmap,
-                dispatched_indices,
-                unzipped_probs,
-                total_zipped_tokens=hs_2d_dispatched.shape[0],
-                num_experts=4,
-            )
+        """
+        num_experts = len(self.tokens_per_expert)
+        # 1 unzip
+        self.dispatched_indices = dispatched_indices.to(paddle.int32)
+        (unzipped_tokens, zipped_expertwise_rowmap, unzipped_probs) = self.unzip_node.forward(
+            hs_2d_dispatched,
+            self.dispatched_indices,
+            dispatched_probs,
+            topk=self.router_topk,
+            num_experts=num_experts,
+            tokens_per_expert=self.tokens_per_expert,
+        )
+        hs_2d_dispatched._record_stream()
+        dispatched_indices._record_stream()
+        dispatched_probs._record_stream()
 
-            self.dispatched_probs = dispatched_probs
-            expert_out_zipped.stop_gradient = False
-            return expert_out_zipped.cast(paddle.bfloat16)
+        # 2 experts
+        padding_token_per_experts = [(x + 511) // 512 * 512 for x in self.tokens_per_expert]
+        expert_out = self.experts_group_gemm_node.forward(
+            unzipped_tokens, unzipped_probs, padding_token_per_experts, self.tokens_per_expert
+        )
+
+        # 3 zip
+        expert_out_tmp = expert_out.reshape([-1, expert_out.shape[-1]])
+
+        expert_out_zipped = self.zip_node.forward(
+            expert_out_tmp,
+            zipped_expertwise_rowmap,
+            self.dispatched_indices,
+            unzipped_probs,
+            total_zipped_tokens=hs_2d_dispatched.shape[0],
+            num_experts=num_experts,
+        )
+
+        self.dispatched_probs = dispatched_probs
+        expert_out_zipped.stop_gradient = False
+
+        return expert_out_zipped
 
     @paddle.no_grad()
     def backward(self, hidden_states_out_grad):
-        if DSV3_USE_FP8_GROUP_GEMM:
-            # zip_grad
-            unzipped_grad = self.zip_node.backward(
-                hidden_states_out_grad,
-                self.dispatched_indices,
-                self.dispatched_probs,
-                top_k=self.router_topk,
-                num_experts=4,
-                max_tokens=max(self.tokens_per_expert),
-            )
-            hidden_states_out_grad._record_stream()
+        """
+        反向传播函数。
 
-            # expert_grad
-            tokens_per_expert_list = []
-            for idx in range(len(self.tokens_per_expert)):
-                tokens_per_expert_list.append(
-                    paddle.full(shape=[1], fill_value=self.tokens_per_expert[idx], dtype="int32")
-                )
+        Args:
+            hidden_states_out_grad (Tensor): 隐藏状态梯度。
 
-            tokens_per_expert = paddle.concat(tokens_per_expert_list)
-            expected_m = int(max(self.tokens_per_expert))
-            expert_out, probs_grad = self.experts_group_gemm_node.backward(
-                unzipped_grad, tokens_per_expert, self.dispatched_indices, expected_m
-            )
+        Returns:
+            Tuple[Tensor, Tensor]: 包含两个元素，分别为hs_fp8_dispatched_grad和dispatched_probs_grad。
+                - hs_fp8_dispatched_grad (Tensor): 解压后的隐藏状态梯度。
+                - dispatched_probs_grad (Tensor): 分发概率梯度。
 
-            hs_fp8_dispatched_grad, dispatched_probs_grad = self.unzip_node.backward(
-                expert_out, hidden_states_out_grad, probs_grad, self.dispatched_indices
-            )
-            self.reset_statue()
-            return hs_fp8_dispatched_grad, dispatched_probs_grad
+        """
+        # zip_grad
+        unzipped_grad = self.zip_node.backward(
+            hidden_states_out_grad,
+            self.dispatched_indices,
+            self.dispatched_probs,
+            top_k=self.router_topk,
+            num_experts=len(self.tokens_per_expert),
+            tokens_per_expert=self.tokens_per_expert,
+        )
+        hidden_states_out_grad._record_stream()
+
+        # expert_grad
+        expert_out, probs_grad = self.experts_group_gemm_node.backward(unzipped_grad)
+
+        hs_fp8_dispatched_grad, dispatched_probs_grad = self.unzip_node.backward(
+            expert_out,
+            hidden_states_out_grad,
+            probs_grad,
+            self.dispatched_indices,
+            num_experts=len(self.tokens_per_expert),
+        )
+        self.reset_statue()
+        return hs_fp8_dispatched_grad, dispatched_probs_grad
 
 
 class FusionMoeNode:
     def __init__(self, custom_map, name="fusion_moe_node"):
         self.token_dispatcher = custom_map.token_dispatcher
+        self.moe_router_topk = custom_map.moe_router_topk
 
-        self.dispatch_quant_node = Fp8DispatchQuantNode(self.token_dispatcher)
         self.dispatch_node = Fp8DispatchNode(self.token_dispatcher)
-        self.mlp_node = MlpNode(custom_map)
+        self.mlp_node = MlpNode(custom_map, self.moe_router_topk)
         self.combine_node = Fp8CombineNode(self.token_dispatcher)
         self.combine_quant_node = Fp8CombineQuantNode(self.token_dispatcher)
         self.name = name
