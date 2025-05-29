@@ -26,7 +26,7 @@ from paddle import Tensor, nn
 from paddle.distributed.communication.group import Group
 
 from ..utils.log import logger
-from .fp8_utils import FuseMoeMlpNode
+from .fp8_utils import FP8GroupGemmMlpFunctionNode
 from .fused_a2a import CombineNode, DispatchNode
 from .moe_gate import PretrainedMoEGate
 from .moe_utils import UnZipNode, ZipNode
@@ -569,7 +569,7 @@ class Fp8CombineQuantNode:
         return output_combie_grad
 
 
-class MlpNode:
+class FusionMlpNode:
     """
     The FusedMoeLayer class includes operations for unzipping, expert computation, and zipping.
     """
@@ -577,7 +577,7 @@ class MlpNode:
     def __init__(self, custom_map, max_topk, mem_efficient=False):
         self.token_dispatcher = custom_map.token_dispatcher
         self.experts = custom_map.experts
-        self.experts_group_gemm_node = FuseMoeMlpNode(custom_map, mem_efficient=mem_efficient)
+        self.experts_group_gemm_node = FP8GroupGemmMlpFunctionNode(custom_map, mem_efficient=mem_efficient)
         self.unzip_node = UnZipNode(self.token_dispatcher)
         self.zip_node = ZipNode(self.token_dispatcher)
         self.dispatched_indices = None
@@ -703,7 +703,7 @@ class FusionMoeNode:
         self.moe_router_topk = custom_map.moe_router_topk
 
         self.dispatch_node = Fp8DispatchNode(self.token_dispatcher)
-        self.mlp_node = MlpNode(custom_map, self.moe_router_topk)
+        self.mlp_node = FusionMlpNode(custom_map, self.moe_router_topk)
         self.combine_node = Fp8CombineNode(self.token_dispatcher)
         self.combine_quant_node = Fp8CombineQuantNode(self.token_dispatcher)
         self.name = name

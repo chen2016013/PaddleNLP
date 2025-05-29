@@ -41,7 +41,7 @@ __all__ = [
     "dequantize_fp8_to_fp32",
     "FP8Linear",
     "MoeMlpNode",
-    "FuseMoeMlpNode",
+    "FP8GroupGemmMlpFunctionNode",
 ]
 
 
@@ -431,7 +431,7 @@ class FP8Mlp(paddle.nn.Layer):
         return FP8MlpFunction.apply(x, self.w1, self.w2)
 
 
-class FuseMoeMlpNode:
+class FP8GroupGemmMlpFunctionNode:
     def __init__(self, custom_map, mem_efficient=False, name="experts_group_gemm_contiguous_node"):
         self.custom_map = custom_map
         self.mem_efficient = mem_efficient
@@ -462,16 +462,7 @@ class FuseMoeMlpNode:
             [i for i, count in enumerate(tokens_per_expert) for _ in range(count)], dtype="int32"
         )
         # concat w1, shape is [num_groups, n, k]
-        stacked_w1 = paddle.stack(expert_w1, axis=0)
-        stacked_w1_t = paddle.transpose(stacked_w1, [0, 2, 1]).contiguous()
-        concated_w1_t = stacked_w1_t.reshape([-1, stacked_w1_t.shape[-1]])
-        # quant w1
-        w1_t_quant, w1_t_scale = kitchen_quant(
-            concated_w1_t,
-            backend=kitchen.ops.Backend.CUBLAS,
-            is_1d_scaled=False,
-            return_transpose=False,
-        )
+        w1_t_quant, w1_t_scale = FQO.fused_stack_transpose_quant(expert_w1)
         w1_t_quant = w1_t_quant.reshape([num_expert, -1, w1_t_quant.shape[-1]])
         w1_t_scale = w1_t_scale.reshape([num_expert, -1, w1_t_scale.shape[-1]])
 
@@ -505,13 +496,7 @@ class FuseMoeMlpNode:
         [m_sum, k] = [m_sum, n] * [num_groups, n, k]
         """
         # concat and transpose w2
-        stacked_w2 = paddle.stack(expert_w2, axis=0)
-        stacked_w2_t = paddle.transpose(stacked_w2, [0, 2, 1]).contiguous()
-        concated_w2_t = stacked_w2_t.reshape([-1, stacked_w2_t.shape[-1]])
-        # quant w2
-        w2_quant, w2_sacle = kitchen_quant(
-            concated_w2_t, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=False, return_transpose=False
-        )
+        w2_quant, w2_sacle = FQO.fused_stack_transpose_quant(expert_w2)
         w2_quant = w2_quant.reshape([num_expert, -1, w2_quant.shape[-1]])
         w2_sacle = w2_sacle.reshape([num_expert, -1, w2_sacle.shape[-1]])
 
@@ -533,17 +518,8 @@ class FuseMoeMlpNode:
         do2 = do3 * w2_t
         [m_sum, n] = [m_sum, k] * [num_groups, k, n]
         """
-        # recomput o2
-        o2 = self.fwd_swiglu(o1)
-        o2_s = (o2 * self.unzipped_probs).cast(paddle.bfloat16)
-
         # recompute concated_w2_2d
-        stacked_w2 = paddle.stack(expert_w2, axis=0)
-        concated_w2 = stacked_w2.reshape([-1, stacked_w2.shape[-1]])
-        # quant w2
-        bw_w2_quant, bw_w2_scale = kitchen_quant(
-            concated_w2, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=False, return_transpose=False
-        )
+        bw_w2_quant, bw_w2_scale = FQO.fused_stack_quant(expert_w2)
         bw_w2_quant = bw_w2_quant.reshape([len(expert_w2), -1, bw_w2_quant.shape[-1]])
         bw_w2_scale = bw_w2_scale.reshape([len(expert_w2), -1, bw_w2_scale.shape[-1]])
 
@@ -557,13 +533,9 @@ class FuseMoeMlpNode:
                 (unzipped_grad_fp8, unzipped_grad_scale), (bw_w2_quant, bw_w2_scale), do2_s, m_indices=self.m_indices
             )
 
-        # do2: 前向从bfloat16-->float32，反向从float32-->bfloat16,do2 需要保持 bfloat16（因为 o2 是 bfloat16)
-        do2 = (do2_s.cast(paddle.float32) * self.unzipped_probs).cast(paddle.bfloat16)
+        do1, probs_grad, o2_s = FQO.fused_swiglu_probs_bwd(o1, do2_s, self.unzipped_probs)
 
-        # probs_grad: probs_grad 需要保持 float32（因为 unzipped_probs 是 float32）
-        probs_grad = (do2_s.cast(paddle.float32) * (o2.cast(paddle.float32))).sum(axis=-1)
-
-        return do2, o2_s, probs_grad
+        return do1, o2_s, probs_grad
 
     def bwd_swiglu(self, o1, do2):
         do1, _ = paddle._C_ops.swiglu_grad(o1, None, do2)
@@ -575,12 +547,7 @@ class FuseMoeMlpNode:
         [m_sum, k] = [m_sum, n] * [num_groups, n, k]
         """
         # recompute concated_w1_t
-        stacked_w1 = paddle.stack(expert_w1, axis=0)
-        concated_w1_t_2d = stacked_w1.reshape([-1, stacked_w1.shape[-1]])
-        # quant w1
-        bw_w1_quant, bw_w1_scale = kitchen_quant(
-            concated_w1_t_2d, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=False, return_transpose=False
-        )
+        bw_w1_quant, bw_w1_scale = FQO.fused_stack_quant(expert_w1)
         bw_w1_quant = bw_w1_quant.reshape([len(expert_w1), -1, bw_w1_quant.shape[-1]])
         bw_w1_scale = bw_w1_scale.reshape([len(expert_w1), -1, bw_w1_scale.shape[-1]])
 
@@ -723,8 +690,8 @@ class FuseMoeMlpNode:
     @paddle.no_grad()
     def backward(self, out_grad):
         # recompute expert_w2 and expert_w1
-        expert_w2 = [x.w2 for x in self.custom_map.experts if x is not None]
         expert_w1 = [x.w1 for x in self.custom_map.experts if x is not None]
+        expert_w2 = [x.w2 for x in self.custom_map.experts if x is not None]
 
         if self.mem_efficient:
             input = FQO.fused_act_dequant(self.input_fp8, self.input_scale)
@@ -734,10 +701,7 @@ class FuseMoeMlpNode:
             o1 = self.o1
 
         # do2
-        do2, o2_s, probs_grad = self.bwd_dowm_input(expert_w2, out_grad, o1)
-
-        # do1
-        do1 = self.bwd_swiglu(o1, do2)
+        do1, o2_s, probs_grad = self.bwd_dowm_input(expert_w2, out_grad, o1)
 
         # dx
         dx = self.bwd_gate_up_input(do1, expert_w1)
