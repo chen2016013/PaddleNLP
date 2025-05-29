@@ -697,8 +697,8 @@ class FuseMoeMlpNode:
     def forward(self, hs_out, unzipped_probs, tokens_per_expert, origin_token_per_experts):
         self.origin_token_per_experts = origin_token_per_experts
         # get w1/w2
-        expert_w1 = [x.up_gate_proj.weight for x in self.custom_map.experts if x is not None]
-        expert_w2 = [x.down_proj.weight for x in self.custom_map.experts if x is not None]
+        expert_w1 = [x.w1 for x in self.custom_map.experts if x is not None]
+        expert_w2 = [x.w2 for x in self.custom_map.experts if x is not None]
 
         num_expert = len(expert_w1)
 
@@ -723,8 +723,8 @@ class FuseMoeMlpNode:
     @paddle.no_grad()
     def backward(self, out_grad):
         # recompute expert_w2 and expert_w1
-        expert_w2 = [x.down_proj.weight for x in self.custom_map.experts if x is not None]
-        expert_w1 = [x.up_gate_proj.weight for x in self.custom_map.experts if x is not None]
+        expert_w2 = [x.w2 for x in self.custom_map.experts if x is not None]
+        expert_w1 = [x.w1 for x in self.custom_map.experts if x is not None]
 
         if self.mem_efficient:
             input = FQO.fused_act_dequant(self.input_fp8, self.input_scale)

@@ -575,15 +575,15 @@ class MlpNode:
     """
 
     def __init__(self, custom_map, max_topk, mem_efficient=False):
-        self.token_dispatcher = custom_map.dispatcher
+        self.token_dispatcher = custom_map.token_dispatcher
         self.experts = custom_map.experts
         self.experts_group_gemm_node = FuseMoeMlpNode(custom_map, mem_efficient=mem_efficient)
         self.unzip_node = UnZipNode(self.token_dispatcher)
         self.zip_node = ZipNode(self.token_dispatcher)
         self.dispatched_indices = None
         self.dispatched_probs = None
-        self.tokens_per_expert = self.token_dispatcher._comm_manager.tokens_per_expert_list
-        self.tokens_per_expert_tensor = paddle.to_tensor(self.tokens_per_expert, dtype="int32")
+        self.tokens_per_expert = None
+        self.tokens_per_expert_tensor = None
         self.router_topk = max_topk
 
     def reset_statue(self):
@@ -617,6 +617,9 @@ class MlpNode:
             Tensor: 经过前向传播计算后的输出数据。
 
         """
+        self.tokens_per_expert = self.token_dispatcher._comm_manager.tokens_per_expert
+        self.tokens_per_expert_tensor = paddle.to_tensor(self.tokens_per_expert, dtype="int32")
+
         num_experts = len(self.tokens_per_expert)
         # 1 unzip
         self.dispatched_indices = dispatched_indices.to(paddle.int32)
