@@ -163,17 +163,18 @@ class FP8LinearFunction(paddle.autograd.PyLayer):
         x_t_fp8, x_t_scale, weight = ctx.saved_tensor()
 
         # ===== dx = deep_gemm(dout_fp8, w_fp8)
-        if dout.shape[0] % 512 != 0:
+        dout_2d = dout.reshape([-1, dout.shape[-1]])
+        if dout_2d.shape[0] % 512 != 0:
             dout_fp8, dout_scale = kitchen_quant(
-                dout, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=False
+                dout_2d, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=False
             )
-            dout = padding(dout, 0)
+            dout_2d = padding(dout_2d, 0)
             _, _, dout_t_fp8, dout_t_scale = kitchen_quant(
-                dout, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=True
+                dout_2d, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=True
             )
         else:
             dout_fp8, dout_scale, dout_t_fp8, dout_t_scale = kitchen_quant(
-                dout, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=True
+                dout_2d, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=True
             )
         w_fp8, w_sacle = kitchen_quant(
             weight, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=False, return_transpose=False
@@ -244,17 +245,18 @@ class FP8LinearKeepXFunction(paddle.autograd.PyLayer):
             weight, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=False, return_transpose=False
         )
 
-        if dout.shape[0] % 512 != 0:
+        dout_2d = dout.reshape([-1, dout.shape[-1]])
+        if dout_2d.shape[0] % 512 != 0:
             dout_fp8, dout_scale = kitchen_quant(
-                dout, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=False
+                dout_2d, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=False
             )
-            dout = padding(dout, 0)
+            dout_2d = padding(dout_2d, 0)
             _, _, dout_t_fp8, dout_t_scale = kitchen_quant(
-                dout, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=True
+                dout_2d, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=True
             )
         else:
             dout_fp8, dout_scale, dout_t_fp8, dout_t_scale = kitchen_quant(
-                dout, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=True
+                dout_2d, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=True
             )
 
         dx = paddle.empty([dout_fp8.shape[0], w_fp8.shape[0]], dout.dtype)
