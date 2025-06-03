@@ -43,6 +43,7 @@ def setup_fused_quant_ops():
                 "fused_quanted_ops/fused_swiglu_probs_bwd.cu",
                 "fused_quanted_ops/fused_spaq.cu",
                 "fused_quanted_ops/fused_stack_transpose_quant.cu",
+                "fused_quanted_ops/fused_transpose_split_quant.cu",
             ],
             extra_compile_args={
                 "cxx": ["-O3", "-w", "-Wno-abi", "-fPIC", "-std=c++17"],
