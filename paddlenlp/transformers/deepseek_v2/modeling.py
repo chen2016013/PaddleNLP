@@ -36,6 +36,7 @@ from paddle import Tensor, nn
 from paddle.distributed import fleet
 from paddle.distributed.fleet.meta_parallel import get_rng_state_tracker
 from paddle.distributed.fleet.recompute.recompute import recompute
+from paddle.jit import to_static
 from paddle.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from paddle.utils import try_import
 
@@ -902,6 +903,7 @@ def repeat_kv(hidden_states: paddle.Tensor, n_rep: int) -> paddle.Tensor:
     return hidden_states.reshape([batch, slen, num_key_value_heads * n_rep, head_axis])
 
 
+@to_static(backend="CINN")
 def qkv_pre_process(
     q, kv, k_pe, rotary_emb, num_heads, q_head_dim, qk_nope_head_dim, v_head_dim, qk_rope_head_dim, position_ids
 ):
@@ -928,7 +930,7 @@ def qkv_pre_process(
     cos, sin = rotary_emb(value_states, seq_len=kv_seq_len)
     cos = cos[None, :, None, :]
     sin = sin[None, :, None, :]
-    q_pe, k_pe = apply_rotary_pos_emb(q_pe, k_pe, cos, sin, position_ids, True)
+    q_pe, k_pe = apply_rotary_pos_emb(q_pe, k_pe, cos, sin, position_ids, False)
 
     query_states = paddle.concat([q_nope, q_pe], axis=-1)
     key_states = paddle.concat([k_nope, k_pe], axis=-1)
