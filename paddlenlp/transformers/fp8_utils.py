@@ -490,7 +490,7 @@ class FP8GroupGemmMlpFunctionNode:
         o2 = swiglu(o1)
         return o2
 
-    def fwd_down(self, o2, expert_w2, num_expert):
+    def fwd_down(self, o1, unzipped_probs, expert_w2, num_expert):
         """
         o3 = o2 * w2
         [m_sum, k] = [m_sum, n] * [num_groups, n, k]
@@ -501,12 +501,11 @@ class FP8GroupGemmMlpFunctionNode:
         w2_sacle = w2_sacle.reshape([num_expert, -1, w2_sacle.shape[-1]])
 
         # quant o2
-        o2_fp8, o2_scale = kitchen_quant(
-            o2, backend=kitchen.ops.Backend.CUTLASS, is_1d_scaled=True, return_transpose=False
-        )
+        o2_fp8, o2_scale = FQO.fused_spaq(o1, unzipped_probs, using_pow2_scaling=True)
+        self.unzipped_probs = unzipped_probs
 
         # compute gemm
-        o3 = paddle.zeros([o2_fp8.shape[0], w2_quant.shape[1]], dtype=o2.dtype)
+        o3 = paddle.zeros([o2_fp8.shape[0], w2_quant.shape[1]], dtype=o1.dtype)
         if numpy.prod(o2_fp8.shape) != 0:
             deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
                 (o2_fp8, o2_scale), (w2_quant, w2_sacle), o3, m_indices=self.m_indices
@@ -564,24 +563,21 @@ class FP8GroupGemmMlpFunctionNode:
             )
         return dx
 
+    def fused_transpose_split_quant(self, x, tokens_per_expert, pow_2_scales):
+        out, scale = [], []
+        for tokens in tokens_per_expert:
+            out.append(paddle.empty([x.shape[1], tokens], dtype="float8_e4m3fn"))
+            scale.append(paddle.empty([tokens // 128, x.shape[1]], dtype="float32"))
+        FQO.fused_transpose_split_quant(x, out, scale, pow_2_scales)
+        return out, scale
+
     def bwd_down_weight(self, do3, o2, expert_w2):
         """
         dw2 = do2_t * do3
         [n, k] = [n, m_sum] * [m_sum, k] (m_sum = sum(tokens_per_expert))
         """
-        o2_t = o2.transpose([1, 0]).contiguous()
-        o2_t_fp8, o2_t_scale = kitchen_quant(
-            o2_t, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=False
-        )
-        o2_t_fp8 = paddle.split(o2_t_fp8, num_or_sections=self.tokens_per_expert, axis=-1)
-        o2_t_scale = paddle.split(o2_t_scale, num_or_sections=[int(x / 128) for x in self.tokens_per_expert], axis=0)
-
-        do3_t = do3.transpose([1, 0]).contiguous()
-        do3_t_fp8, do3_t_scale = kitchen_quant(
-            do3_t, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=False
-        )
-        do3_t_fp8 = paddle.split(do3_t_fp8, num_or_sections=self.tokens_per_expert, axis=-1)
-        do3_t_scale = paddle.split(do3_t_scale, num_or_sections=[int(x / 128) for x in self.tokens_per_expert], axis=0)
+        o2_t_fp8, o2_t_scale = self.fused_transpose_split_quant(o2, self.tokens_per_expert, True)
+        do3_t_fp8, do3_t_scale = self.fused_transpose_split_quant(do3, self.tokens_per_expert, True)
 
         for i in range(len(expert_w2)):
             if hasattr(expert_w2[i], "main_grad"):
@@ -616,21 +612,8 @@ class FP8GroupGemmMlpFunctionNode:
         dw1 = dx_t * do1
         [k, n] = [k, m_sum] * [m_sum, n] (m_sum = sum(tokens_per_expert))
         """
-        input_x_t = input_x.transpose([1, 0]).contiguous()
-        input_x_t_fp8, input_x_t_scale = kitchen_quant(
-            input_x_t, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=False
-        )
-        input_x_t_fp8 = paddle.split(input_x_t_fp8, num_or_sections=self.tokens_per_expert, axis=-1)
-        input_x_t_scale = paddle.split(
-            input_x_t_scale, num_or_sections=[int(x / 128) for x in self.tokens_per_expert], axis=0
-        )
-
-        do1_t = do1.transpose([1, 0]).contiguous()
-        do1_t_fp8, do1_t_scale = kitchen_quant(
-            do1_t, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=False
-        )
-        do1_t_fp8 = paddle.split(do1_t_fp8, num_or_sections=self.tokens_per_expert, axis=-1)
-        do1_t_scale = paddle.split(do1_t_scale, num_or_sections=[int(x / 128) for x in self.tokens_per_expert], axis=0)
+        input_x_t_fp8, input_x_t_scale = self.fused_transpose_split_quant(input_x, self.tokens_per_expert, True)
+        do1_t_fp8, do1_t_scale = self.fused_transpose_split_quant(do1, self.tokens_per_expert, True)
 
         for i in range(len(expert_w1)):
             if hasattr(expert_w1[i], "main_grad"):
@@ -663,6 +646,10 @@ class FP8GroupGemmMlpFunctionNode:
     @paddle.no_grad()
     def forward(self, hs_out, unzipped_probs, tokens_per_expert, origin_token_per_experts):
         self.origin_token_per_experts = origin_token_per_experts
+        if hs_out.shape[0] == 0:
+            o3 = paddle.zeros_like(hs_out)
+            self.unzipped_probs = unzipped_probs.unsqueeze(-1)
+            return o3
         # get w1/w2
         expert_w1 = [x.w1 for x in self.custom_map.experts if x is not None]
         expert_w2 = [x.w2 for x in self.custom_map.experts if x is not None]
@@ -673,17 +660,9 @@ class FP8GroupGemmMlpFunctionNode:
         o1 = self.fwd_gate_up(hs_out, expert_w1, num_expert, tokens_per_expert)
         self.o1 = o1
 
-        # o2
-        o2 = self.fwd_swiglu(o1)
-
-        unzipped_probs = unzipped_probs.unsqueeze(-1)
-        o2_s = (o2 * unzipped_probs).cast(paddle.bfloat16)
-
         # o3
-        o3 = self.fwd_down(o2_s, expert_w2, num_expert)
+        o3 = self.fwd_down(o1, unzipped_probs, expert_w2, num_expert)
 
-        # save for bwd
-        self.unzipped_probs = unzipped_probs
         return o3
 
     @paddle.no_grad()
