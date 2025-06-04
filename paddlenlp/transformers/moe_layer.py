@@ -583,7 +583,6 @@ class FusionMlpNode:
         self.dispatched_indices = None
         self.dispatched_probs = None
         self.tokens_per_expert = None
-        self.tokens_per_expert_tensor = None
         self.router_topk = max_topk
 
     def reset_statue(self):
@@ -600,7 +599,6 @@ class FusionMlpNode:
         self.dispatched_indices = None
         self.dispatched_probs = None
         self.tokens_per_expert = None
-        self.tokens_per_expert_tensor = None
         self.router_topk = None
 
     @paddle.no_grad()
@@ -618,7 +616,6 @@ class FusionMlpNode:
 
         """
         self.tokens_per_expert = self.token_dispatcher._comm_manager.tokens_per_expert
-        self.tokens_per_expert_tensor = paddle.to_tensor(self.tokens_per_expert, dtype="int32")
 
         num_experts = len(self.tokens_per_expert)
         # 1 unzip
