@@ -600,6 +600,8 @@ class FusionMlpNode:
         self.dispatched_probs = None
         self.tokens_per_expert = None
         self.router_topk = None
+        self.experts_group_gemm_node.reset_statue()
+        self.experts_group_gemm_node = None
 
     @paddle.no_grad()
     def forward(self, hs_2d_dispatched, dispatched_indices, dispatched_probs):
@@ -700,7 +702,7 @@ class FusionMoeNode:
         self.moe_router_topk = custom_map.moe_router_topk
 
         self.dispatch_node = Fp8DispatchNode(self.token_dispatcher)
-        self.mlp_node = FusionMlpNode(custom_map, self.moe_router_topk)
+        self.mlp_node = FusionMlpNode(custom_map, self.moe_router_topk, mem_efficient=True)
         self.combine_node = Fp8CombineNode(self.token_dispatcher)
         self.combine_quant_node = Fp8CombineQuantNode(self.token_dispatcher)
         self.name = name

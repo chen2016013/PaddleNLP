@@ -671,8 +671,7 @@ class FP8GroupGemmMlpFunctionNode:
 
         # o1
         o1 = self.fwd_gate_up(hs_out, expert_w1, num_expert, tokens_per_expert)
-        if not self.mem_efficient:
-            self.o1 = o1
+        self.o1 = o1
 
         # o2
         o2 = self.fwd_swiglu(o1)
@@ -695,22 +694,33 @@ class FP8GroupGemmMlpFunctionNode:
 
         if self.mem_efficient:
             input = FQO.fused_act_dequant(self.input_fp8, self.input_scale)
-            o1 = self.fwd_gate_up(input, expert_w1, len(expert_w1), self.tokens_per_expert)
         else:
             input = self.input
-            o1 = self.o1
 
         # do2
-        do1, o2_s, probs_grad = self.bwd_dowm_input(expert_w2, out_grad, o1)
+        do1, o2_s, probs_grad = self.bwd_dowm_input(expert_w2, out_grad, self.o1)
+
+        # release o1 and reset o1
+        del self.o1
+        self.o1 = None
 
         # dx
         dx = self.bwd_gate_up_input(do1, expert_w1)
 
-        # dw2
-        self.bwd_down_weight(out_grad, o2_s, expert_w2)
-
         # dw1
         self.bwd_gate_up_weight(do1, input, expert_w1)
+
+        # release do1 and input
+        del do1
+        del input
+        if self.mem_efficient:
+            self.input_fp8 = None
+            self.input_scale = None
+        else:
+            self.input = None
+
+        # dw2
+        self.bwd_down_weight(out_grad, o2_s, expert_w2)
 
         self.reset_statue()
         return dx, probs_grad
