@@ -99,7 +99,7 @@ def setup_token_dispatcher_utils():
                     "--expt-relaxed-constexpr",
                     "--expt-extended-lambda",
                     "--use_fast_math",
-                    "-maxrregcount=80",
+                    "-maxrregcount=32",
                     "-lineinfo",
                     "-DCUTLASS_DEBUG_TRACE_LEVEL=0",
                     "-gencode=arch=compute_90a,code=sm_90a",
