@@ -471,6 +471,8 @@ class FP8GroupGemmMlpFunctionNode:
             x_bf16, backend=kitchen.ops.Backend.CUTLASS, is_1d_scaled=True, return_transpose=False
         )
 
+        x_scale = paddle.transpose(paddle.transpose(x_scale, [1, 0]).contiguous(), [1, 0])
+
         # compute gemm
         o1 = paddle.zeros([x_bf16.shape[0], w1_t_quant.shape[1]], dtype=x_bf16.dtype)
         if numpy.prod(x_fp8.shape) != 0:
@@ -502,6 +504,7 @@ class FP8GroupGemmMlpFunctionNode:
 
         # quant o2
         o2_fp8, o2_scale = FQO.fused_spaq(o1, unzipped_probs, using_pow2_scaling=True)
+        o2_scale = paddle.transpose(paddle.transpose(o2_scale, [1, 0]).contiguous(), [1, 0])
         self.unzipped_probs = unzipped_probs
 
         # compute gemm
