@@ -431,6 +431,14 @@ class FP8Mlp(paddle.nn.Layer):
         return FP8MlpFunction.apply(x, self.w1, self.w2)
 
 
+def gen_m_indices(tokens_per_expert):
+    tokens = []
+    for i in range(len(tokens_per_expert)):
+        tokens.append(paddle.full([tokens_per_expert[i]], i, dtype="int32"))
+    out = paddle.concat(tokens, axis=0)
+    return out
+
+
 class FP8GroupGemmMlpFunctionNode:
     def __init__(self, custom_map, mem_efficient=False, name="experts_group_gemm_contiguous_node"):
         self.custom_map = custom_map
@@ -458,9 +466,7 @@ class FP8GroupGemmMlpFunctionNode:
         [m_sum, n] = [m_sum, k] * [num_groups, k, n] (m_sum = sum(tokens_per_expert))
         """
         self.tokens_per_expert = tokens_per_expert
-        self.m_indices = paddle.to_tensor(
-            [i for i, count in enumerate(tokens_per_expert) for _ in range(count)], dtype="int32"
-        )
+        self.m_indices = gen_m_indices(tokens_per_expert)
         # concat w1, shape is [num_groups, n, k]
         w1_t_quant, w1_t_scale = FQO.fused_stack_transpose_quant(expert_w1)
         w1_t_quant = w1_t_quant.reshape([num_expert, -1, w1_t_quant.shape[-1]])

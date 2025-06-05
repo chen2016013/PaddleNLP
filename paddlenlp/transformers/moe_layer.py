@@ -635,7 +635,7 @@ class FusionMlpNode:
         dispatched_probs._record_stream()
 
         # 2 experts
-        padding_token_per_experts = [(x + 511) // 512 * 512 for x in self.tokens_per_expert]
+        padding_token_per_experts = [(x + 127) // 128 * 128 for x in self.tokens_per_expert]
         expert_out = self.experts_group_gemm_node.forward(
             unzipped_tokens, unzipped_probs, padding_token_per_experts, self.tokens_per_expert
         )

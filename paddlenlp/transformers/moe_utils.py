@@ -128,7 +128,7 @@ class UnZipNode:
             topk=topk,
             num_experts=num_experts,
             tokens_per_expert=tokens_per_expert,
-            padding_multiplex=512,
+            padding_multiplex=128,
         )
         self.unzipped_probs = unzipped_probs
         self.zipped_expertwise_rowmap = zipped_expertwise_rowmap
@@ -184,7 +184,7 @@ class ZipNode:
             top_k,
             num_experts,
             tokens_per_expert,
-            padding_multiplex=512,
+            padding_multiplex=128,
         )
 
         return unzipped_grad
