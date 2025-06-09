@@ -36,6 +36,7 @@ from paddle import Tensor, nn
 from paddle.distributed import fleet
 from paddle.distributed.fleet.meta_parallel import get_rng_state_tracker
 from paddle.distributed.fleet.recompute.recompute import recompute
+from paddle.jit import to_static
 from paddle.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from paddle.utils import try_import
 
@@ -53,10 +54,8 @@ try:
 except:
     pass
 
-from paddle.nn.functional.flash_attention import flash_attention
-
-
 from paddle import _C_ops
+from paddle.nn.functional.flash_attention import flash_attention
 
 from paddlenlp.transformers.model_utils import dtype_guard
 
@@ -78,12 +77,14 @@ from ..moe_layer import MoELayer
 from ..utils import device_guard
 from . import fp8_linear as linear_utils
 from .configuration import DeepseekV2Config
-from .fp8_linear import FP8DeepseekV2MLP, FP8KeepXLinear, FP8Linear, Linear
+
+FA_VERSION = int(os.getenv("FA_VERSION", 2))
+
+from ..fp8_utils import FP8KeepXLinear, FP8Linear, FP8Mlp
+from .fp8_linear import Linear
 
 DSV3_USE_FP8_GEMM = os.getenv("DSV3_USE_FP8_GEMM", "False").lower() == "true"
 DSV3_USE_ATTEN_RECOMPUTE = os.getenv("DSV3_USE_ATTEN_RECOMPUTE", "False").lower() == "true"
-
-FA_VERSION = int(os.getenv("FA_VERSION", 2))
 
 Linear = FP8Linear if DSV3_USE_FP8_GEMM else Linear
 
@@ -847,7 +848,7 @@ class DeepseekV2MoE(MoELayer):
             routed_scaling_factor=config.routed_scaling_factor,
             drop_tokens=False,
         )
-        DeepseekV2MLPClass = FP8DeepseekV2MLP if DSV3_USE_FP8_GEMM else DeepseekV2MLP
+        DeepseekV2MLPClass = FP8Mlp if DSV3_USE_FP8_GEMM else DeepseekV2MLP
 
         super().__init__(
             config=config,
@@ -902,6 +903,7 @@ def repeat_kv(hidden_states: paddle.Tensor, n_rep: int) -> paddle.Tensor:
     return hidden_states.reshape([batch, slen, num_key_value_heads * n_rep, head_axis])
 
 
+@to_static(backend="CINN")
 def qkv_pre_process(
     q, kv, k_pe, rotary_emb, num_heads, q_head_dim, qk_nope_head_dim, v_head_dim, qk_rope_head_dim, position_ids
 ):
@@ -928,7 +930,7 @@ def qkv_pre_process(
     cos, sin = rotary_emb(value_states, seq_len=kv_seq_len)
     cos = cos[None, :, None, :]
     sin = sin[None, :, None, :]
-    q_pe, k_pe = apply_rotary_pos_emb(q_pe, k_pe, cos, sin, position_ids, True)
+    q_pe, k_pe = apply_rotary_pos_emb(q_pe, k_pe, cos, sin, position_ids, False)
 
     query_states = paddle.concat([q_nope, q_pe], axis=-1)
     key_states = paddle.concat([k_nope, k_pe], axis=-1)
@@ -1060,23 +1062,23 @@ class MemroyRecomputeAttnFunc(paddle.autograd.PyLayer):
 
         elif FA_VERSION == 3:
             attn_out, softmax_lse = _C_ops.flash_attn_v3(
-                    query_states,
-                    key_states,
-                    value_states,
-                    None,  # q_v_
-                    None,  # q_descale_
-                    None,  # k_descale_
-                    None,  # v_descale_
-                    softmax_scale,
-                    True,
-                    -1,  # window_size_left
-                    -1,  # window_size_right
-                    0.0,  # softcap
-                    1,  # num_splits
-                    False,  # manual_set_pack_gqa
-                    False,  # pack_gqa_
-                    0,  # sm_margin
-                )
+                query_states,
+                key_states,
+                value_states,
+                None,  # q_v_
+                None,  # q_descale_
+                None,  # k_descale_
+                None,  # v_descale_
+                softmax_scale,
+                True,
+                -1,  # window_size_left
+                -1,  # window_size_right
+                0.0,  # softcap
+                1,  # num_splits
+                False,  # manual_set_pack_gqa
+                False,  # pack_gqa_
+                0,  # sm_margin
+            )
         else:
             assert False, f"invalid {FA_VERSION=}"
 
@@ -1776,7 +1778,7 @@ class DeepseekV2DecoderLayer(nn.Layer):
 
         self.self_attn = DeepseekV2Attention(config=config, layerwise_recompute=layerwise_recompute)
 
-        DeepseekV2MLPClass = FP8DeepseekV2MLP if DSV3_USE_FP8_GEMM else DeepseekV2MLP
+        DeepseekV2MLPClass = FP8Mlp if DSV3_USE_FP8_GEMM else DeepseekV2MLP
 
         self.mlp = (
             DeepseekV2MoE(config)
