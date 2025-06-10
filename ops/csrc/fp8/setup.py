@@ -25,6 +25,7 @@ from setuptools.command.build_py import build_py
 from setuptools.command.develop import develop
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
+print("========> current_dir: ", current_dir)
 jit_include_dirs = ("deep_gemm/include/deep_gemm",)
 third_party_include_dirs = (
     "../../../csrc/third_party/cutlass/include/cute",
@@ -69,7 +70,7 @@ class CustomBuildPy(build_py):
             dirname = d.split("/")[-1]
             src_dir = os.path.join(current_dir, d)
             dst_dir = os.path.join(build_include_dir, dirname)
-
+            print("========> copytree: ", dst_dir)
             # Remove existing directory if it exists
             if os.path.exists(dst_dir):
                 shutil.rmtree(dst_dir)
