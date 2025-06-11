@@ -69,6 +69,7 @@ class CustomBuildPy(build_py):
             dirname = d.split("/")[-1]
             src_dir = os.path.join(current_dir, d)
             dst_dir = os.path.join(build_include_dir, dirname)
+
             # Remove existing directory if it exists
             if os.path.exists(dst_dir):
                 shutil.rmtree(dst_dir)
