@@ -64,9 +64,11 @@ static void __instantiate_kernel() {{
         assert kwargs["A"].shape == kwargs["B"].shape == kwargs["C"].shape
         assert kwargs["A"].place == kwargs["B"].place == kwargs["C"].place
         assert kwargs["A"].dim() == 1
+        A_shape = kwargs["A"].shape
+        A_numel = reduce(lambda x, y: x * y, A_shape)
 
         config = cbd.CUlaunchConfig()
-        config.gridDimX = (kwargs["A"].numel() + 127) // 128
+        config.gridDimX = (A_numel + 127) // 128
         config.gridDimY = 1
         config.gridDimZ = 1
         config.blockDimX = 128
@@ -78,7 +80,7 @@ static void __instantiate_kernel() {{
             kwargs["A"].data_ptr(),
             kwargs["B"].data_ptr(),
             kwargs["C"].data_ptr(),
-            kwargs["A"].numel(),
+            A_numel,
         )
         arg_types = (
             ctypes.c_void_p,
