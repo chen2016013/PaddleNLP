@@ -685,6 +685,7 @@ class FusionMlpNode:
         # expert_grad
         expert_out, probs_grad = self.experts_group_gemm_node.backward(unzipped_grad)
 
+
         hs_fp16_dispatched_grad, dispatched_probs_grad = self.unzip_node.backward(
             expert_out,
             hidden_states_out_grad,
@@ -694,6 +695,7 @@ class FusionMlpNode:
         )
         self.reset_statue()
         return hs_fp16_dispatched_grad, dispatched_probs_grad
+        return hs_fp8_dispatched_grad, dispatched_probs_grad
 
 
 class FusionMoeNode:
