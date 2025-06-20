@@ -37,8 +37,9 @@ from .utils import (
     get_num_sms,
 )
 
-empty_global = paddle.empty([0], dtype=paddle.int32)
-stream_tmp = paddle.device.cuda.current_stream().cuda_stream
+global_empty_tensor = paddle.empty([0], dtype=paddle.int32)
+# Todo: Use default stream to accelerate CPU time. Optimize here if use multistream to launch gemm kernel.
+global_stream = paddle.device.cuda.current_stream().cuda_stream
 
 
 def is_tma_multicast_legal(
@@ -288,14 +289,14 @@ def gemm_fp8_fp8_bf16_nt(
         "IS_TMA_MULTICAST_ON_A": tma_multicast_config[1],
         # Runtime arguments
         "SCALES_B": rhs_scales,
-        "GROUPED_LAYOUT": empty_global,
+        "GROUPED_LAYOUT": global_empty_tensor,
         "NUM_SMS": num_sms,
         "SMEM_SIZE": smem_config[0],
         "TENSOR_MAP_A": tensor_map_a,
         "TENSOR_MAP_B": tensor_map_b,
         "TENSOR_MAP_SCALES_A": tensor_map_scales_a,
         "TENSOR_MAP_D": tensor_map_d,
-        "STREAM": stream_tmp,
+        "STREAM": global_stream,
         "DEVICE_INDEX": out.place.gpu_device_id(),
     }
 

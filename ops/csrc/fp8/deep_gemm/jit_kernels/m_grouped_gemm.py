@@ -32,7 +32,8 @@ from .runtime import (
 )
 from .utils import ceil_div, get_col_major_tma_aligned_tensor, get_num_sms
 
-stream_tmp = paddle.device.cuda.current_stream().cuda_stream
+# Todo: Use default stream to accelerate CPU time. Optimize here if use multistream to launch gemm kernel.
+global_stream = paddle.device.cuda.current_stream().cuda_stream
 
 
 def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
@@ -53,9 +54,9 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
             `get_m_alignment_for_contiguous_layout()` (128).
 
     Arguments:
-        lhs: the first element is an FP8 tensor (typed `paddle.bfloat16`) of shape `[m_sum, k]`,
+        lhs: the first element is an FP8 tensor (typed `paddle.float8_e4m3fn`) of shape `[m_sum, k]`,
              the second element is an FP32 1x128 scaling tensor for LHS of shape `[m_sum, ⌈k / 128⌉]`.
-        rhs: the first element is an FP8 tensor (typed `paddle.bfloat16`) of shape `[num_groups, n, k]`,
+        rhs: the first element is an FP8 tensor (typed `paddle.float8_e4m3fn`) of shape `[num_groups, n, k]`,
              the second element is an FP32 128x128 scaling tensor for RHS of shape `[num_groups, ⌈n / 128⌉, ⌈k / 128⌉]`.
         out: the BF16 output tensor of shape `[m_sum, n]`, representing the result.
         m_indices: a tensor of shape `[m_sum]` with type `paddle.int`.
@@ -134,7 +135,7 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
         "TENSOR_MAP_B": tensor_map_b,
         "TENSOR_MAP_SCALES_A": tensor_map_scales_a,
         "TENSOR_MAP_D": tensor_map_d,
-        "STREAM": stream_tmp,
+        "STREAM": global_stream,
         "DEVICE_INDEX": out.place.gpu_device_id(),
     }
 
