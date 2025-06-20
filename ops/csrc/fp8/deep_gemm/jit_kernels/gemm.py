@@ -22,9 +22,8 @@ from typing import Tuple
 
 import paddle
 
-from ..jit import build
+from ..jit import FP8GemmRuntime, build
 from .runtime import (
-    FP8GemmRuntime,
     GemmType,
     make_2d_tma_a_desc,
     make_2d_tma_b_desc,
@@ -37,6 +36,9 @@ from .utils import (
     get_m_alignment_for_contiguous_layout,
     get_num_sms,
 )
+
+empty_global = paddle.empty([0], dtype=paddle.int32)
+stream_tmp = paddle.device.cuda.current_stream().cuda_stream
 
 
 def is_tma_multicast_legal(
@@ -286,18 +288,17 @@ def gemm_fp8_fp8_bf16_nt(
         "IS_TMA_MULTICAST_ON_A": tma_multicast_config[1],
         # Runtime arguments
         "SCALES_B": rhs_scales,
-        "GROUPED_LAYOUT": paddle.empty([0], dtype=paddle.int32),
+        "GROUPED_LAYOUT": empty_global,
         "NUM_SMS": num_sms,
         "SMEM_SIZE": smem_config[0],
         "TENSOR_MAP_A": tensor_map_a,
         "TENSOR_MAP_B": tensor_map_b,
         "TENSOR_MAP_SCALES_A": tensor_map_scales_a,
         "TENSOR_MAP_D": tensor_map_d,
-        "STREAM": paddle.device.cuda.current_stream().cuda_stream,
+        "STREAM": stream_tmp,
         "DEVICE_INDEX": out.place.gpu_device_id(),
     }
 
     # Generate, build and run the kernel
-    code = FP8GemmRuntime.generate(kwargs)
-    runtime = build("gemm_fp8_fp8_bf16_nt", code, FP8GemmRuntime, kwargs)
+    runtime = build("gemm_fp8_fp8_bf16_nt", FP8GemmRuntime, kwargs)
     runtime(**kwargs)

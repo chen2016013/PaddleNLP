@@ -20,10 +20,9 @@ from typing import List, Tuple
 
 import paddle
 
-from ..jit import build
+from ..jit import FP8WGradGemmRuntime, build
 from .gemm import get_best_configs
 from .runtime import (
-    FP8WGradGemmRuntime,
     GemmType,
     make_2d_tma_a_desc,
     make_2d_tma_b_desc,
@@ -141,8 +140,7 @@ def wgrad_gemm_fp8_fp8_fp32_nt(
     }
 
     # Generate, build and run the kernel
-    code = FP8WGradGemmRuntime.generate(kwargs)
-    runtime = build("wgrad_gemm_fp8_fp8_fp32_nt", code, FP8WGradGemmRuntime, kwargs)
+    runtime = build("wgrad_gemm_fp8_fp8_fp32_nt", FP8WGradGemmRuntime, kwargs)
     runtime(**kwargs)
 
 

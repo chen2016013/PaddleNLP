@@ -108,14 +108,18 @@ def get_col_major_tma_aligned_tensor(x: Tensor) -> Tensor:
     # NOTES: for the extreme performance, you may rewrite/fuse this function in CUDA
     assert x.dim() in (2, 3)
     remove_dim = False
-    m, n = x.shape[-2], x.shape[-1]
-    aligned_m = get_tma_aligned_size(m, x.element_size())
     if x.dim() == 2:
+        m, n = x.shape
+
+        aligned_m = get_tma_aligned_size(m, x.element_size())
+
         if x.strides[0] == 1 and x.strides[1] == aligned_m:
             return x
+
         x, remove_dim = x.unsqueeze(0), True
 
-    b = x.shape[0]
+    b, m, n = x.shape
+    aligned_m = get_tma_aligned_size(m, x.element_size())
 
     # The last kernel gives a column-major TMA aligned layout
     if x.strides[0] == aligned_m * n and x.strides[1] == 1 and x.strides[2] == aligned_m:

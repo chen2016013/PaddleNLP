@@ -17,4 +17,4 @@
 # Licensed under the MIT License - https://github.com/deepseek-ai/DeepGEMM/blob/main/LICENSE
 
 from .compiler import NVCCCompiler, NVRTCCompiler, build, get_nvcc_compiler
-from .runtime import Runtime
+from .runtime import FP8GemmRuntime, FP8WGradGemmRuntime, Runtime

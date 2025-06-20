@@ -16,14 +16,14 @@
 # Copyright (c) 2025 DeepSeek
 # Licensed under the MIT License - https://github.com/deepseek-ai/DeepGEMM/blob/main/LICENSE
 
+from functools import reduce
 from typing import Tuple
 
 import paddle
 
-from ..jit import build
+from ..jit import FP8GemmRuntime, build
 from .gemm import get_best_configs
 from .runtime import (
-    FP8GemmRuntime,
     GemmType,
     make_2d_tma_a_desc,
     make_2d_tma_b_desc,
@@ -31,6 +31,8 @@ from .runtime import (
     make_2d_tma_scales_desc,
 )
 from .utils import ceil_div, get_col_major_tma_aligned_tensor, get_num_sms
+
+stream_tmp = paddle.device.cuda.current_stream().cuda_stream
 
 
 def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
@@ -66,7 +68,8 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
     m, k = lhs.shape
     num_groups, n, k_ = rhs.shape
     m_, n_ = out.shape
-    m__ = m_indices.numel()
+    m_shape = m_indices.shape
+    m__ = reduce(lambda x, y: x * y, m_shape)
 
     # Type and shape checks
     assert m == m_ == m__ and k == k_ and n == n_
@@ -131,13 +134,12 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
         "TENSOR_MAP_B": tensor_map_b,
         "TENSOR_MAP_SCALES_A": tensor_map_scales_a,
         "TENSOR_MAP_D": tensor_map_d,
-        "STREAM": paddle.device.cuda.current_stream().cuda_stream,
+        "STREAM": stream_tmp,
         "DEVICE_INDEX": out.place.gpu_device_id(),
     }
 
     # Generate, build and run the kernel
-    code = FP8GemmRuntime.generate(kwargs)
-    runtime = build("m_grouped_gemm_fp8_fp8_bf16_nt", code, FP8GemmRuntime, kwargs)
+    runtime = build("m_grouped_gemm_fp8_fp8_bf16_nt", FP8GemmRuntime, kwargs)
     runtime(**kwargs)
 
 
@@ -250,6 +252,5 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_masked(
     }
 
     # Generate, build and run the kernel
-    code = FP8GemmRuntime.generate(kwargs)
-    runtime = build("m_grouped_gemm_fp8_fp8_bf16_nt", code, FP8GemmRuntime, kwargs)
+    runtime = build("m_grouped_gemm_fp8_fp8_bf16_nt", FP8GemmRuntime, kwargs)
     runtime(**kwargs)
