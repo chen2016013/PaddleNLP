@@ -700,7 +700,7 @@ class FusionMoeNode:
     def __init__(self, custom_map, name="fusion_moe_node"):
         self.token_dispatcher = custom_map.token_dispatcher
         self.moe_router_topk = custom_map.moe_router_topk
-
+        self.dispatch_quant_node = Fp8DispatchQuantNode(self.token_dispatcher)
         self.dispatch_node = Fp8DispatchNode(self.token_dispatcher)
         self.mlp_node = FusionMlpNode(custom_map, self.moe_router_topk, mem_efficient=True)
         self.combine_node = Fp8CombineNode(self.token_dispatcher)
