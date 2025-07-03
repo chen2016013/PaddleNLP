@@ -26,16 +26,12 @@ from paddle import Tensor, nn
 from paddle.distributed.communication.group import Group
 
 from ..utils.log import logger
-from .fp8_utils import FP8GroupGemmMlpFunctionNode, kitchen_quant
+from .fp8_utils import FP8GroupGemmMlpFunctionNode
 from .fused_a2a import CombineNode, DispatchNode
 from .moe_gate import PretrainedMoEGate
 from .moe_utils import UnZipNode, ZipNode
 from .token_dispatcher import MoEFlexTokenDispatcher, PreDispatchNode
 
-try:
-    import kitchen
-except:
-    pass
 DSV3_USE_FP8_GEMM = os.getenv("DSV3_USE_FP8_GEMM", "False").lower() == "true"
 
 DSV3_USE_FP8_GROUP_GEMM = os.getenv("DSV3_USE_FP8_GROUP_GEMM", "False").lower() == "true"
@@ -461,8 +457,8 @@ class Fp8DispatchQuantNode:
         hs_2d = hidden_states.view([-1, self.token_dispatcher.hidden_shape[-1]])
 
         # quant
-        hs_fp8, hs_scale = kitchen_quant(
-            hs_2d, backend=kitchen.ops.Backend.CUTLASS, is_1d_scaled=True, return_transpose=False
+        hs_fp8, hs_scale = paddle.incubate.nn.functional.fp8_quant_blockwise(
+            hs_2d, output_scale_transpose=False, quant_method="1x128", input_transpose=False
         )
 
         # pre_dispatch
@@ -584,8 +580,8 @@ class Fp8CombineQuantNode:
         output_combine_grad = paddle.reshape(output_grad, self.output_combine_shape)
 
         # output_combine_grad quant to fp8
-        output_combine_grad_fp8, output_combine_grad_scale = kitchen_quant(
-            output_combine_grad, backend=kitchen.ops.Backend.CUTLASS, is_1d_scaled=True, return_transpose=False
+        output_combine_grad_fp8, output_combine_grad_scale = paddle.incubate.nn.functional.fp8_quant_blockwise(
+            output_combine_grad, output_scale_transpose=False, quant_method="1x128", input_transpose=False
         )
         return output_combine_grad_fp8, output_combine_grad_scale
 

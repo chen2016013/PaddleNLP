@@ -793,14 +793,9 @@ class FP8GroupGemmMlpFunctionNode:
         do1_fp8, do1_scale = paddle.incubate.nn.functional.fp8_quant_blockwise(
             do1, output_scale_transpose=False, quant_method="1x128", input_transpose=False
         )
-
         # compute gemm
         dx_shape = [do1_fp8.shape[0], bw_w1_quant.shape[1]]
-        if dx is None:
-            dx = paddle.empty(shape=dx_shape, dtype=do1.dtype)
-        else:
-            assert dx.shape == dx_shape, f"{dx.shape} vs {dx_shape}"
-            dx.zero_()
+        dx = paddle.empty(shape=dx_shape, dtype=do1.dtype)
         if numpy.prod(do1_fp8.shape) != 0:
             if self.is_split_group_gemm:
                 split_group_gemm(do1_fp8, do1_scale, bw_w1_quant, bw_w1_scale, self.tokens_per_expert, dx)
@@ -966,7 +961,7 @@ class FP8GroupGemmMlpFunctionNode:
         del out_grad_dequant_fp16
 
         # dx
-        dx = self.bwd_gate_up_input(do1, expert_w1, dx=out_grad)
+        dx = self.bwd_gate_up_input(do1, expert_w1, dx=out_grad[0])
         del do1
 
         self.reset_statue()
