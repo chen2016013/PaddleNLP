@@ -566,7 +566,7 @@ class FP8GroupGemmMlpFunctionNode:
         self.input_scale = None
         self.o1 = None
 
-    def fwd_gate_up(self, x_bf16, expert_w1, num_expert, tokens_per_expert):
+    def fwd_gate_up(self, x, expert_w1, num_expert, tokens_per_expert):
         """
         o1 = x * w1
         [m_sum, n] = [m_sum, k] * [num_groups, k, n] (m_sum = sum(tokens_per_expert))
@@ -578,25 +578,17 @@ class FP8GroupGemmMlpFunctionNode:
         w1_t_quant = w1_t_quant.reshape([num_expert, -1, w1_t_quant.shape[-1]])
         w1_t_scale = w1_t_scale.reshape([num_expert, -1, w1_t_scale.shape[-1]])
 
-        # quant x_bf16
-        x_fp8, x_scale = kitchen_quant(
-            x_bf16, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=False
-        )
-
-        x_scale = x_scale.T
+        (x_fp8, x_scale) = x
 
         # compute gemm
-        o1 = paddle.empty([x_bf16.shape[0], w1_t_quant.shape[1]], dtype=x_bf16.dtype)
+        o1 = paddle.empty([x_fp8.shape[0], w1_t_quant.shape[1]], dtype="bfloat16")
         if numpy.prod(x_fp8.shape) != 0:
             deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
                 (x_fp8, x_scale), (w1_t_quant, w1_t_scale), o1, m_indices=self.m_indices
             )
 
-        if self.mem_efficient:
-            self.input_fp8 = x_fp8
-            self.input_scale = x_scale
-        else:
-            self.input = x_bf16
+        self.input_fp8 = x_fp8
+        self.input_scale = x_scale
 
         return o1
 
@@ -643,13 +635,11 @@ class FP8GroupGemmMlpFunctionNode:
         bw_w2_scale = bw_w2_scale.reshape([len(expert_w2), -1, bw_w2_scale.shape[-1]])
 
         # compute gemm
-        unzipped_grad_fp8, unzipped_grad_scale = kitchen_quant(
-            unzipped_grad, backend=kitchen.ops.Backend.CUBLAS, is_1d_scaled=True, return_transpose=False
-        )
-        do2_s = paddle.empty([unzipped_grad_fp8.shape[0], bw_w2_quant.shape[1]], dtype=unzipped_grad.dtype)
+        (unzipped_grad_fp8, unzipped_grad_scale) = unzipped_grad
+        do2_s = paddle.empty([unzipped_grad_fp8.shape[0], bw_w2_quant.shape[1]], dtype="bfloat16")
         if numpy.prod(unzipped_grad_fp8.shape) != 0:
             deep_gemm.m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
-                (unzipped_grad_fp8, unzipped_grad_scale.T), (bw_w2_quant, bw_w2_scale), do2_s, m_indices=self.m_indices
+                (unzipped_grad_fp8, unzipped_grad_scale), (bw_w2_quant, bw_w2_scale), do2_s, m_indices=self.m_indices
             )
 
         with paddle.amp.auto_cast(False):
@@ -767,8 +757,8 @@ class FP8GroupGemmMlpFunctionNode:
     @paddle.no_grad()
     def forward(self, hs_out, unzipped_probs, tokens_per_expert, origin_token_per_experts):
         self.origin_token_per_experts = origin_token_per_experts
-        if hs_out.shape[0] == 0:
-            o3 = paddle.zeros_like(hs_out)
+        if isinstance(hs_out, tuple) and hs_out[0].shape[0] == 0:
+            o3 = paddle.zeros_like(hs_out[0])
             self.unzipped_probs = unzipped_probs.unsqueeze(-1)
             return o3
         # get w1/w2
@@ -792,10 +782,7 @@ class FP8GroupGemmMlpFunctionNode:
         expert_w1 = [x.w1 for x in self.custom_map.experts if x is not None]
         expert_w2 = [x.w2 for x in self.custom_map.experts if x is not None]
 
-        if self.mem_efficient:
-            input = paddle.incubate.nn.functional.fused_act_dequant(self.input_fp8, self.input_scale)
-        else:
-            input = self.input
+        input = paddle.incubate.nn.functional.fused_act_dequant(self.input_fp8, self.input_scale)
 
         # do2
         do1, o2_s, probs_grad = self.bwd_dowm_input(expert_w2, out_grad, self.o1)
@@ -813,14 +800,13 @@ class FP8GroupGemmMlpFunctionNode:
         # release do1 and input
         del do1
         del input
-        if self.mem_efficient:
-            self.input_fp8 = None
-            self.input_scale = None
-        else:
-            self.input = None
+        self.input_fp8 = None
+        self.input_scale = None
+
+        out_grad_dequant_fp16 = paddle.incubate.nn.functional.fused_act_dequant(out_grad[0], out_grad[1])
 
         # dw2
-        self.bwd_down_weight(out_grad, o2_s, expert_w2)
+        self.bwd_down_weight(out_grad_dequant_fp16, o2_s, expert_w2)
 
         self.reset_statue()
         return dx, probs_grad
