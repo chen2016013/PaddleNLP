@@ -675,9 +675,15 @@ class FP8GroupGemmMlpFunctionNode:
             x_fp8, x_scale = self.input_fp8, self.input_scale
             assert x_fp8 is not None and x_scale is not None
         else:
-            (x_fp8, x_scale) = x
-
-        x_scale = paddle.transpose(paddle.transpose(x_scale, [1, 0]).contiguous(), [1, 0])
+            if isinstance(x, tuple):
+                (x_fp8, x_scale) = x
+                x_scale = paddle.transpose(paddle.transpose(x_scale, [1, 0]).contiguous(), [1, 0])
+            else:
+                # quant x_bf16
+                x_fp8, x_scale = paddle.incubate.nn.functional.fp8_quant_blockwise(
+                    x, output_scale_transpose=True, quant_method="1x128", input_transpose=False
+                )
+                x_scale = x_scale.T
 
         # compute gemm
         o1 = paddle.empty([x_fp8.shape[0], w1_t_quant.shape[1]], dtype=expert_w1[0].dtype)
@@ -799,7 +805,7 @@ class FP8GroupGemmMlpFunctionNode:
         do1_scale = do1_scale.T
         # compute gemm
         dx_shape = [do1_fp8.shape[0], bw_w1_quant.shape[1]]
-        if dx is None or dx.dtype == paddle.bfloat16:
+        if dx is None or dx.dtype != do1.dtype:
             dx = paddle.empty(shape=dx_shape, dtype=do1.dtype)
         else:
             assert dx.shape == dx_shape, f"{dx.shape} vs {dx_shape}"
