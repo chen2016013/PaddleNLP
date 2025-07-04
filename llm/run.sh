@@ -20,3 +20,4 @@
 mpirun sh script/kill_process.sh 
 mpirun rm -rf output
 nohup mpirun sh script/train_gpu.sh config/deepseek-v3/pretrain_argument.json & 
+
