@@ -182,7 +182,6 @@ class DeepseekV2Config(PretrainedConfig):
         use_dualpipev=False,
         send_mtp_embed=False,
         recompute_fwd_gate_up=False,
-        dequant_input=False,
         is_split_group_gemm=False,
         **kwargs,
     ):
@@ -235,9 +234,7 @@ class DeepseekV2Config(PretrainedConfig):
         self.use_dualpipev = use_dualpipev
         self.send_mtp_embed = send_mtp_embed
         self.recompute_fwd_gate_up = recompute_fwd_gate_up
-        self.dequant_input = dequant_input
         self.is_split_group_gemm = is_split_group_gemm
-
 
         super().__init__(
             pad_token_id=pad_token_id,

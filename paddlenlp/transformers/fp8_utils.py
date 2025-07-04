@@ -600,13 +600,11 @@ class FP8GroupGemmMlpFunctionNode:
         self,
         custom_map,
         recompute_fwd_gate_up=False,
-        dequant_input=False,
         is_split_group_gemm=False,
         name="experts_group_gemm_contiguous_node",
     ):
         self.experts = custom_map.experts
         self.recompute_fwd_gate_up = recompute_fwd_gate_up
-        self.dequant_input = dequant_input
         self.is_split_group_gemm = is_split_group_gemm
         self.tokens_per_expert = None
         self.m_indices = None
@@ -660,7 +658,7 @@ class FP8GroupGemmMlpFunctionNode:
         out = paddle.concat(tokens, axis=0)
         return out
 
-    def fwd_gate_up(self, x_bf16, expert_w1, num_expert, tokens_per_expert):
+    def fwd_gate_up(self, x, expert_w1, num_expert, tokens_per_expert):
         """
         o1 = x * w1
         [m_sum, n] = [m_sum, k] * [num_groups, k, n] (m_sum = sum(tokens_per_expert))
@@ -673,14 +671,11 @@ class FP8GroupGemmMlpFunctionNode:
         w1_t_quant = w1_t_quant.reshape([num_expert, -1, w1_t_quant.shape[-1]])
         w1_t_scale = w1_t_scale.reshape([num_expert, -1, w1_t_scale.shape[-1]])
 
-        if x_bf16 is None:
+        if x is None:
             x_fp8, x_scale = self.input_fp8, self.input_scale
             assert x_fp8 is not None and x_scale is not None
         else:
-            # quant x_bf16
-            x_fp8, x_scale = paddle.incubate.nn.functional.fp8_quant_blockwise(
-                x_bf16, output_scale_transpose=False, quant_method="1x128", input_transpose=False
-            )
+            (x_fp8, x_scale) = x
 
         x_scale = paddle.transpose(paddle.transpose(x_scale, [1, 0]).contiguous(), [1, 0])
 
@@ -694,11 +689,8 @@ class FP8GroupGemmMlpFunctionNode:
                     (x_fp8, x_scale), (w1_t_quant, w1_t_scale), o1, m_indices=self.m_indices, num_sms=112
                 )
 
-        if self.dequant_input:
-            self.input_fp8 = x_fp8
-            self.input_scale = x_scale
-        else:
-            self.input = x_bf16
+        self.input_fp8 = x_fp8
+        self.input_scale = x_scale
         return o1
 
     def fwd_swiglu(self, o1):
@@ -755,10 +747,8 @@ class FP8GroupGemmMlpFunctionNode:
         bw_w2_scale = bw_w2_scale.reshape([len(expert_w2), -1, bw_w2_scale.shape[-1]])
 
         # compute gemm
-        unzipped_grad_fp8, unzipped_grad_scale = paddle.incubate.nn.functional.fp8_quant_blockwise(
-            unzipped_grad, output_scale_transpose=False, quant_method="1x128", input_transpose=False
-        )
-        do2_s = paddle.empty([unzipped_grad_fp8.shape[0], bw_w2_quant.shape[1]], dtype=unzipped_grad.dtype)
+        (unzipped_grad_fp8, unzipped_grad_scale) = unzipped_grad
+        do2_s = paddle.empty([unzipped_grad_fp8.shape[0], bw_w2_quant.shape[1]], dtype="bfloat16")
         if numpy.prod(unzipped_grad_fp8.shape) != 0:
             if self.is_split_group_gemm:
                 split_group_gemm(
@@ -803,14 +793,9 @@ class FP8GroupGemmMlpFunctionNode:
         do1_fp8, do1_scale = paddle.incubate.nn.functional.fp8_quant_blockwise(
             do1, output_scale_transpose=False, quant_method="1x128", input_transpose=False
         )
-
         # compute gemm
         dx_shape = [do1_fp8.shape[0], bw_w1_quant.shape[1]]
-        if dx is None:
-            dx = paddle.empty(shape=dx_shape, dtype=do1.dtype)
-        else:
-            assert dx.shape == dx_shape, f"{dx.shape} vs {dx_shape}"
-            dx.zero_()
+        dx = paddle.empty(shape=dx_shape, dtype=do1.dtype)
         if numpy.prod(do1_fp8.shape) != 0:
             if self.is_split_group_gemm:
                 split_group_gemm(do1_fp8, do1_scale, bw_w1_quant, bw_w1_scale, self.tokens_per_expert, dx)
@@ -870,10 +855,7 @@ class FP8GroupGemmMlpFunctionNode:
         [k, n] = [k, m_sum] * [m_sum, n] (m_sum = sum(tokens_per_expert))
         """
         if input_x is None:
-            if self.dequant_input:
-                input_x = paddle.incubate.nn.functional.fused_act_dequant(self.input_fp8, self.input_scale)
-            else:
-                input_x = self.input
+            input_x = paddle.incubate.nn.functional.fused_act_dequant(self.input_fp8, self.input_scale)
         if clear_input:
             self.input = None
             self.input_fp8 = None
@@ -922,8 +904,8 @@ class FP8GroupGemmMlpFunctionNode:
             shape = self.input_fp8.shape
             dtype = paddle.bfloat16
         else:
-            shape = hs_out.shape
-            dtype = hs_out.dtype
+            shape = hs_out[0].shape
+            dtype = hs_out[0].dtype
 
         if shape[0] == 0:
             o3 = paddle.zeros(shape, dtype=dtype)
@@ -974,10 +956,12 @@ class FP8GroupGemmMlpFunctionNode:
         self.input = None
 
         # dw2
-        self.bwd_down_weight(out_grad, o2_s, expert_w2)
+        out_grad_dequant_fp16 = paddle.incubate.nn.functional.fused_act_dequant(out_grad[0], out_grad[1])
+        self.bwd_down_weight(out_grad_dequant_fp16, o2_s, expert_w2)
+        del out_grad_dequant_fp16
 
         # dx
-        dx = self.bwd_gate_up_input(do1, expert_w1, dx=out_grad)
+        dx = self.bwd_gate_up_input(do1, expert_w1, dx=out_grad[0])
         del do1
 
         self.reset_statue()
