@@ -64,4 +64,4 @@
     "fuse_attention_ffn": true,
     "use_fused_rope": true,
     "token_drop_steps": 0
-}
+  }
