@@ -18,10 +18,6 @@ unset DISTRIBUTED_TRAINER_ENDPOINTS
 unset FLAGS_START_PORT
 unset PADDLE_ELASTIC_TIMEOUT
 
-export DSV3_USE_FP8_GEMM=true
-export DSV3_USE_ATTEN_RECOMPUTE=true
-export FA_VERSION=3
-
 nnodes=$PADDLE_TRAINERS_NUM
 rank=$PADDLE_TRAINER_ID
 
@@ -37,7 +33,7 @@ export NVSHMEM_IB_TRAFFIC_CLASS=162
 #export NVSHMEM_IB_ENABLE_IBGDA=true
 ##export NVSHMEM_DISABLE_P2P=1
 export NVSHMEM_BOOTSTRAP=UID
-export NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME=eth0
+export NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME==xgbe0
 
 START_RANK=0
 END_RANK=8
@@ -50,14 +46,10 @@ if [[ $rank -ge $END_RANK ]]; then
     exit 0
 fi
 
-sh script/kill_process.sh 
-sleep 1
-# source /root/paddlejob/workspace/env_run/chenxi/chenxi_py3.10/bin/activate
-
 rank=$(($rank-$START_RANK))
 nnodes=$(($END_RANK-$START_RANK))
 
-master=`cat /root/paddlejob/workspace/hostfile | head -n $(($START_RANK+1)) | tail -n 1 | awk '{print $1}'`
+master=`cat /root/paddlejob/workspace/hostfile | head -n 1 | awk '{print $1}'`
 port=36679
 export PYTHONPATH=../:$PYTHONPATH
 export PATH=/opt/nvidia/nsight-systems/2025.1.1/bin/:$PATH
