@@ -466,7 +466,7 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 l_aux,
             ) = self.attn_and_gate_node.forward(inputs)
 
-        hs_2d, token_indices, token_probs = self.fp8_fusion_moe_node.dispatch_quant_node.forward(
+        hs_fp8, hs_scale, token_indices, token_probs = self.fp8_fusion_moe_node.dispatch_quant_node.forward(
             hidden_states, probs, routing_map
         )
         if self.send_mtp_embed:
@@ -475,7 +475,8 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states,
                 residual,
                 l_aux,
-                hs_2d,
+                hs_fp8,
+                hs_scale,
                 token_indices,
                 token_probs,
             )
@@ -484,7 +485,8 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states,
                 residual,
                 l_aux,
-                hs_2d,
+                hs_fp8,
+                hs_scale,
                 token_indices,
                 token_probs,
             )
@@ -496,7 +498,8 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states,
                 residual,
                 l_aux,
-                hs_2d,
+                hs_fp8,
+                hs_scale,
                 token_indices,
                 token_probs,
             ) = inputs
@@ -505,13 +508,20 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states,
                 residual,
                 l_aux,
-                hs_2d,
+                hs_fp8,
+                hs_scale,
                 token_indices,
                 token_probs,
             ) = inputs
 
-        (hs_fp16_dispatched, dispatched_indices, dispatched_probs,) = self.fp8_fusion_moe_node.dispatch_node.forward(
-            hs_2d,
+        (
+            hs_fp8_dispatched,
+            hs_scale_dispatched,
+            dispatched_indices,
+            dispatched_probs,
+        ) = self.fp8_fusion_moe_node.dispatch_node.forward(
+            hs_fp8,
+            hs_scale,
             token_indices,
             token_probs,
             previous_event=previous_event,
@@ -524,7 +534,8 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states,
                 residual,
                 l_aux,
-                hs_fp16_dispatched,
+                hs_fp8_dispatched,
+                hs_scale_dispatched,
                 dispatched_indices,
                 dispatched_probs,
             )
@@ -533,7 +544,8 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states,
                 residual,
                 l_aux,
-                hs_fp16_dispatched,
+                hs_fp8_dispatched,
+                hs_scale_dispatched,
                 dispatched_indices,
                 dispatched_probs,
             )
@@ -545,7 +557,8 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states,
                 residual,
                 l_aux,
-                hs_fp16_dispatched,
+                hs_fp8_dispatched,
+                hs_scale_dispatched,
                 dispatched_indices,
                 dispatched_probs,
             ) = inputs
@@ -554,12 +567,13 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states,
                 residual,
                 l_aux,
-                hs_fp16_dispatched,
+                hs_fp8_dispatched,
+                hs_scale_dispatched,
                 dispatched_indices,
                 dispatched_probs,
             ) = inputs
         hidden_states_out = self.fp8_fusion_moe_node.mlp_node.forward(
-            hs_fp16_dispatched, dispatched_indices, dispatched_probs
+            hs_fp8_dispatched, hs_scale_dispatched, dispatched_indices, dispatched_probs
         )
 
         if self.send_mtp_embed:
@@ -573,18 +587,18 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
         else:
             (hidden_states, residual, l_aux, hidden_states_out) = inputs
 
-        output_combie = self.fp8_fusion_moe_node.combine_node.forward(hidden_states_out, async_finish=async_finish)
+        output_combine = self.fp8_fusion_moe_node.combine_node.forward(hidden_states_out, async_finish=async_finish)
         if self.send_mtp_embed:
-            return (inputs_embeds_mtp, hidden_states, residual, l_aux, output_combie)
+            return (inputs_embeds_mtp, hidden_states, residual, l_aux, output_combine)
         else:
-            return (hidden_states, residual, l_aux, output_combie)
+            return (hidden_states, residual, l_aux, output_combine)
 
     def post_process_forward(self, inputs):
         if self.send_mtp_embed:
-            (inputs_embeds_mtp, hidden_states, residual, l_aux, output_combie) = inputs
+            (inputs_embeds_mtp, hidden_states, residual, l_aux, output_combine) = inputs
         else:
-            (hidden_states, residual, l_aux, output_combie) = inputs
-        final_hidden_states = self.fp8_fusion_moe_node.combine_quant_node.forward(output_combie)
+            (hidden_states, residual, l_aux, output_combine) = inputs
+        final_hidden_states = self.fp8_fusion_moe_node.combine_quant_node.forward(output_combine)
         if self.send_mtp_embed:
             inputs = (inputs_embeds_mtp, hidden_states, residual, l_aux, final_hidden_states)
         else:
@@ -609,21 +623,25 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 l_aux_grad,
                 final_hidden_states_grad,
             ) = self.post_process_node.backward(output_grad)
-        output_combie_grad = self.fp8_fusion_moe_node.combine_quant_node.backward(final_hidden_states_grad)
+        output_combine_grad_fp8, output_combine_grad_scale = self.fp8_fusion_moe_node.combine_quant_node.backward(
+            final_hidden_states_grad
+        )
         if self.send_mtp_embed:
             return (
                 inputs_embeds_mtp_grad,
                 hidden_states_grad,
                 residual_grad,
                 l_aux_grad,
-                output_combie_grad,
+                output_combine_grad_fp8,
+                output_combine_grad_scale,
             )
         else:
             return (
                 hidden_states_grad,
                 residual_grad,
                 l_aux_grad,
-                output_combie_grad,
+                output_combine_grad_fp8,
+                output_combine_grad_scale,
             )
 
     def combine_backward(self, output_grad, async_finish=False):
@@ -633,18 +651,21 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states_grad,
                 residual_grad,
                 l_aux_grad,
-                output_combie_grad_bf16,
+                output_combine_grad_fp8,
+                output_combine_grad_scale,
             ) = output_grad
         else:
             (
                 hidden_states_grad,
                 residual_grad,
                 l_aux_grad,
-                output_combie_grad_bf16,
+                output_combine_grad_fp8,
+                output_combine_grad_scale,
             ) = output_grad
 
-        hidden_states_out_grad_bf16 = self.fp8_fusion_moe_node.combine_node.backward(
-            output_combie_grad_bf16,
+        hidden_states_out_grad_fp8, hidden_states_out_grad_scale = self.fp8_fusion_moe_node.combine_node.backward(
+            output_combine_grad_fp8,
+            output_combine_grad_scale,
             async_finish=async_finish,
         )
 
@@ -654,14 +675,16 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states_grad,
                 residual_grad,
                 l_aux_grad,
-                hidden_states_out_grad_bf16,
+                hidden_states_out_grad_fp8,
+                hidden_states_out_grad_scale,
             )
         else:
             return (
                 hidden_states_grad,
                 residual_grad,
                 l_aux_grad,
-                hidden_states_out_grad_bf16,
+                hidden_states_out_grad_fp8,
+                hidden_states_out_grad_scale,
             )
 
     def mlp_backward(self, output_grad):
@@ -671,17 +694,20 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states_grad,
                 residual_grad,
                 l_aux_grad,
-                hidden_states_out_grad,
+                hidden_states_out_grad_fp8,
+                hidden_states_out_grad_scale,
             ) = output_grad
         else:
             (
                 hidden_states_grad,
                 residual_grad,
                 l_aux_grad,
-                hidden_states_out_grad,
+                hidden_states_out_grad_fp8,
+                hidden_states_out_grad_scale,
             ) = output_grad
-        hs_fp16_dispatched_grad, dispatched_probs_grad = self.fp8_fusion_moe_node.mlp_node.backward(
-            hidden_states_out_grad
+        hs_fp8_dispatched_grad, dispatched_probs_grad = self.fp8_fusion_moe_node.mlp_node.backward(
+            hidden_states_out_grad_fp8,
+            hidden_states_out_grad_scale,
         )
 
         if self.send_mtp_embed:
@@ -690,7 +716,7 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states_grad,
                 residual_grad,
                 l_aux_grad,
-                hs_fp16_dispatched_grad,
+                hs_fp8_dispatched_grad,
                 dispatched_probs_grad,
             )
         else:
@@ -698,7 +724,7 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states_grad,
                 residual_grad,
                 l_aux_grad,
-                hs_fp16_dispatched_grad,
+                hs_fp8_dispatched_grad,
                 dispatched_probs_grad,
             )
 
@@ -709,7 +735,7 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states_grad,
                 residual_grad,
                 l_aux_grad,
-                hs_bf16_dispatched_grad,
+                hs_fp8_dispatched_grad,
                 dispatched_probs_grad,
             ) = output_grad
         else:
@@ -717,11 +743,11 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states_grad,
                 residual_grad,
                 l_aux_grad,
-                hs_bf16_dispatched_grad,
+                hs_fp8_dispatched_grad,
                 dispatched_probs_grad,
             ) = output_grad
-        hs_bf16_grad, token_probs_grad = self.fp8_fusion_moe_node.dispatch_node.backward(
-            hs_bf16_dispatched_grad, dispatched_probs_grad, async_finish=async_finish
+        hs_fp8_grad, token_probs_grad = self.fp8_fusion_moe_node.dispatch_node.backward(
+            hs_fp8_dispatched_grad, dispatched_probs_grad, async_finish=async_finish
         )
 
         if self.send_mtp_embed:
@@ -730,11 +756,11 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states_grad,
                 residual_grad,
                 l_aux_grad,
-                hs_bf16_grad,
+                hs_fp8_grad,
                 token_probs_grad,
             )
         else:
-            return (hidden_states_grad, residual_grad, l_aux_grad, hs_bf16_grad, token_probs_grad)
+            return (hidden_states_grad, residual_grad, l_aux_grad, hs_fp8_grad, token_probs_grad)
 
     def attn_backward(self, output_grad):
         if self.send_mtp_embed:
@@ -743,7 +769,7 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states_grad,
                 residual_grad,
                 l_aux_grad,
-                hs_bf16_grad,
+                hs_fp8_grad,
                 token_probs_grad,
             ) = output_grad
         else:
@@ -751,11 +777,11 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
                 hidden_states_grad,
                 residual_grad,
                 l_aux_grad,
-                hs_bf16_grad,
+                hs_fp8_grad,
                 token_probs_grad,
             ) = output_grad
         hidden_states_grad_, probs_grad, routing_map_grad = self.fp8_fusion_moe_node.dispatch_quant_node.backward(
-            hs_bf16_grad, token_probs_grad
+            hs_fp8_grad, token_probs_grad
         )
 
         if self.send_mtp_embed:
@@ -1234,7 +1260,6 @@ class DeepseekV2DecoderLayerPipe(DeepseekV2DecoderLayer):
                     fp8_fusion_moe_node = FusionMoeNode(
                         self.mlp,
                         recompute_fwd_gate_up=self.config.recompute_fwd_gate_up,
-                        dequant_input=self.config.dequant_input,
                         is_split_group_gemm=self.config.is_split_group_gemm,
                         name="fp8_fusion_moe_node",
                     )
