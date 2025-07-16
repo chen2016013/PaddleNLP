@@ -431,27 +431,17 @@ class MoELayer(nn.Layer):
         else:
             probs, routing_map, l_aux, l_zloss = self.router(hidden_states)
         if DSV3_USE_FP8_GEMM:
-            if DSV3_USE_FP8_DISPATCH:
-                output = FusionMoe.apply(
-                    hidden_states,
-                    probs,
-                    routing_map,
-                    self,
-                    recompute_fwd_gate_up=self.config.recompute_fwd_gate_up,
-                    is_split_group_gemm=self.config.is_split_group_gemm,
-                )
-            else:
-                hidden_states, token_indices, token_probs = self.token_dispatcher.pre_dispatch(
-                    hidden_states, probs, routing_map
-                )
-                output = FusionMoe.apply(
-                    hidden_states,
-                    token_indices,
-                    token_probs,
-                    self,
-                    recompute_fwd_gate_up=self.config.recompute_fwd_gate_up,
-                    is_split_group_gemm=self.config.is_split_group_gemm,
-                )
+            hidden_states, token_indices, token_probs = self.token_dispatcher.pre_dispatch(
+                hidden_states, probs, routing_map
+            )
+            output = FusionMoe.apply(
+                hidden_states,
+                token_indices,
+                token_probs,
+                self,
+                recompute_fwd_gate_up=self.config.recompute_fwd_gate_up,
+                is_split_group_gemm=self.config.is_split_group_gemm,
+            )
         else:
             (
                 dispatched_input,
@@ -515,44 +505,26 @@ class Fp8DispatchQuantNode:
         self.name = name
 
     @paddle.no_grad()
-    def forward(self, hidden_states, probs, routing_map):
-        # reshape
-        self.token_dispatcher.hidden_shape = hidden_states.shape
-        hs_2d = hidden_states.view([-1, self.token_dispatcher.hidden_shape[-1]])
-
+    def forward(self, hidden_states, token_indices, token_probs):
         if DSV3_USE_FP8_DISPATCH:
             # quant
             hs_fp8, hs_scale = paddle.incubate.nn.functional.fp8_quant_blockwise(
-                hs_2d, output_scale_transpose=False, quant_method="1x128", input_transpose=False
+                hidden_states, output_scale_transpose=False, quant_method="1x128", input_transpose=False
             )
-
-            # pre_dispatch
-            token_indices, token_probs = self.pre_dispatch_node.forward(routing_map, probs)
 
             self.hidden_states_shape = hidden_states.shape
             hs_fp8.stop_gradient = False
             token_probs.stop_gradient = False
             return (hs_fp8, hs_scale), token_indices, token_probs
         else:
-            # pre_dispatch
-            token_indices, token_probs = self.pre_dispatch_node.forward(routing_map, probs)
-
             self.hidden_states_shape = hidden_states.shape
-            hs_2d.stop_gradient = False
+            hidden_states.stop_gradient = False
             token_probs.stop_gradient = False
-            return hs_2d, token_indices, token_probs
+            return hidden_states, token_indices, token_probs
 
     @paddle.no_grad()
-    def backward(self, hs_grad, token_probs_grad):
-        # predispatch grad
-        probs_grad = self.pre_dispatch_node.backward(token_probs_grad)
-        token_probs_grad._record_stream()
-
-        # reshape_grad
-        hs_grad = hs_grad.view(self.hidden_states_shape)
-        hs_grad._record_stream()
-
-        return hs_grad, probs_grad, None
+    def backward(self):
+        pass
 
 
 class Fp8DispatchNode:
@@ -851,11 +823,10 @@ class FusionMoeNode:
         self.name = name
 
     @paddle.no_grad()
-    def forward(self, hidden_states, probs, routing_map):
-        if DSV3_USE_FP8_DISPATCH:
-            (hs_fp8, hs_scale), token_indices, token_probs = self.dispatch_quant_node.forward(
-                hidden_states, probs, routing_map
-            )
+    def forward(self, hidden_states, token_indices, token_probs):
+        hs_2d, token_indices, token_probs = self.dispatch_quant_node.forward(hidden_states, token_indices, token_probs)
+        if isinstance(hs_2d, Tuple):
+            (hs_fp8, hs_scale) = hs_2d
             (
                 (hs_fp8_dispatched, hs_scale_dispatched),
                 dispatched_indices,
@@ -870,7 +841,7 @@ class FusionMoeNode:
             return output
         else:
             hs_2d_dispatched, dispatched_indices, dispatched_probs = self.dispatch_node.forward(
-                hidden_states, probs, routing_map
+                hs_2d, token_indices, token_probs
             )
             hidden_states_out = self.mlp_node.forward(hs_2d_dispatched, dispatched_indices, dispatched_probs)
             output_combine = self.combine_node.forward(hidden_states_out)
@@ -885,13 +856,8 @@ class FusionMoeNode:
 
         hs_dispatched_grad, dispatched_probs_grad = self.mlp_node.backward(hidden_states_out_grad, with_dw=with_dw)
 
-        if DSV3_USE_FP8_DISPATCH:
-            hs_fp8_grad, token_probs_grad = self.dispatch_node.backward(hs_dispatched_grad, dispatched_probs_grad)
-            hs_grad, probs_grad, routing_map_grad = self.dispatch_quant_node.backward(hs_fp8_grad, token_probs_grad)
-            return hs_grad, probs_grad, routing_map_grad
-        else:
-            hs_bf16_grad, token_probs_grad = self.dispatch_node.backward(hs_dispatched_grad, dispatched_probs_grad)
-            return hs_bf16_grad, None, token_probs_grad
+        hs_grad, token_probs_grad = self.dispatch_node.backward(hs_dispatched_grad, dispatched_probs_grad)
+        return hs_grad, None, token_probs_grad
 
     @paddle.no_grad()
     def backward_dw(self):
@@ -903,8 +869,8 @@ class FusionMoe(paddle.autograd.PyLayer):
     def forward(
         ctx,
         hidden_states,
-        probs,
-        routing_map,
+        token_indices,
+        token_probs,
         custom_map,
         recompute_fwd_gate_up=False,
         is_split_group_gemm=True,
@@ -914,7 +880,7 @@ class FusionMoe(paddle.autograd.PyLayer):
             recompute_fwd_gate_up=recompute_fwd_gate_up,
             is_split_group_gemm=is_split_group_gemm,
         )
-        return ctx.node.forward(hidden_states, probs, routing_map)
+        return ctx.node.forward(hidden_states, token_indices, token_probs)
 
     @staticmethod
     def backward(ctx, output_grad):
