@@ -27,10 +27,15 @@ from paddle.distributed.communication.group import Group
 
 from ..utils.log import logger
 from .fp8_utils import FP8GroupGemmMlpFunctionNode
-from .fused_a2a import CombineNode, DispatchNode
+from .fused_a2a import CombineNode, DispatchNode, get_buffer, get_hidden_bytes
 from .moe_gate import PretrainedMoEGate
 from .moe_utils import UnZipNode, ZipNode
 from .token_dispatcher import MoEFlexTokenDispatcher, PreDispatchNode
+
+try:
+    import paddle.distributed.communication.deep_ep as deep_ep
+except ImportError:
+    deep_ep = None
 
 DSV3_USE_FP8_GEMM = os.getenv("DSV3_USE_FP8_GEMM", "False").lower() == "true"
 
@@ -188,6 +193,7 @@ class MoELayer(nn.Layer):
         capacity: int = 1.0,
         moe_group: str = "data",
         all_to_all_dropout=0.0,
+        using_post_norm_recompute=False,
     ):
         super().__init__()
 
@@ -245,6 +251,8 @@ class MoELayer(nn.Layer):
         )
         self.token_drop_steps = config.token_drop_steps
         self.using_flex_token = False
+
+        self.using_post_norm_recompute = using_post_norm_recompute
         self._post_init()
 
     def update_flex_token(self):
@@ -280,17 +288,36 @@ class MoELayer(nn.Layer):
                     p.no_sync = not self.is_dummy_moe
                     # logger.info(f"expert param={p.name}, no-sync={p.no_sync}")
 
-    def forward(self, hidden_states: paddle.Tensor):
+    def forward(
+        self,
+        hidden_states: paddle.Tensor,
+        probs=None,
+        routing_map=None,
+        capacity=None,
+        topk_weight=None,
+        topk_ids=None,
+        token_priority=None,
+        l_aux=None,
+        l_zloss=None,
+    ):
         self.update_flex_token()
 
         if self.using_flex_token:
-            return self.forward_flex_token(hidden_states)
+            return self.forward_flex_token(hidden_states, probs, routing_map, l_aux, l_zloss)
         else:
-            return self.forward_drop_token(hidden_states)
+            return self.forward_drop_token(
+                hidden_states, capacity, topk_weight, topk_ids, token_priority, l_aux, l_zloss
+            )
 
     def forward_drop_token(
         self,
         hidden_state: paddle.Tensor,
+        capacity=None,
+        topk_weight=None,
+        topk_ids=None,
+        token_priority=None,
+        l_aux=None,
+        l_zloss=None,
     ):
         """MoE Layer forward function
             1. Gate Forward.
@@ -312,7 +339,17 @@ class MoELayer(nn.Layer):
         # topk_ids    : sk
         # token_priority    : se
         # self.exp_counts  :
-        capacity, topk_weight, topk_ids, token_priority, l_aux, l_zloss = self.gate(hidden_state)
+        if self.using_post_norm_recompute:
+            assert (
+                capacity is not None
+                and topk_weight is not None
+                and topk_ids is not None
+                and token_priority is not None
+                and l_aux is not None
+                and l_zloss is not None
+            )
+        else:
+            capacity, topk_weight, topk_ids, token_priority, l_aux, l_zloss = self.gate(hidden_state)
 
         """MoE expert dispatch from: https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/modeling_deepseek.py"""
         cnts = paddle.zeros([topk_ids.shape[0], len(self.experts)], dtype=topk_ids.dtype)
@@ -391,10 +428,13 @@ class MoELayer(nn.Layer):
 
         return final_out, l_aux, l_zloss
 
-    def forward_flex_token(self, hidden_states: paddle.Tensor):
+    def forward_flex_token(self, hidden_states: paddle.Tensor, probs=None, routing_map=None, l_aux=None, l_zloss=None):
         _, _, d_model = hidden_states.shape
         # reshaped_input = hidden_states.reshape([-1, d_model])
-        probs, routing_map, l_aux, l_zloss = self.router(hidden_states)
+        if self.using_post_norm_recompute:
+            assert probs is not None and routing_map is not None and l_aux is not None and l_zloss is not None
+        else:
+            probs, routing_map, l_aux, l_zloss = self.router(hidden_states)
         if DSV3_USE_FP8_GEMM:
             if DSV3_USE_FP8_DISPATCH:
                 output = FusionMoe.apply(
@@ -587,12 +627,13 @@ class Fp8CombineNode:
         return output_combine
 
     @paddle.no_grad()
-    def backward(self, output_combine_grad, previous_event=None, async_finish=False):
+    def backward(self, output_combine_grad, previous_event=None, async_finish=False, allocate_on_comm_stream=False):
         # combine grad -> fp8
         hidden_states_out_grad = self.combine_node.backward(
             output_combine_grad,
             previous_event=previous_event,
             async_finish=async_finish,
+            allocate_on_comm_stream=allocate_on_comm_stream,
         )
         return hidden_states_out_grad
 
@@ -612,18 +653,29 @@ class Fp8CombineQuantNode:
         return output
 
     @paddle.no_grad()
-    def backward(self, output_grad):
+    def backward(self, output_grad, event_to_wait=None):
         # post combine grad
-        output_combine_grad = paddle.reshape(output_grad, self.output_combine_shape)
-
         if DSV3_USE_FP8_DISPATCH:
-            # output_combine_grad quant to fp8
-            output_combine_grad_fp8, output_combine_grad_scale = paddle.incubate.nn.functional.fp8_quant_blockwise(
-                output_combine_grad, output_scale_transpose=False, quant_method="1x128", input_transpose=False
-            )
-            return (output_combine_grad_fp8, output_combine_grad_scale)
+            if event_to_wait is not None:
+                buffer = get_buffer(self.token_dispatcher._comm_manager.group, get_hidden_bytes(output_grad))
+                custom_stream = paddle.device.Stream(stream_base=buffer.runtime.get_comm_stream())
+                custom_stream.wait_event(event_to_wait)
+            else:
+                custom_stream = paddle.device.current_stream()
+            with paddle.device.stream_guard(custom_stream):
+                output_combine_grad = paddle.reshape(output_grad, self.output_combine_shape)
+                # output_combine_grad quant to fp8
+                output_combine_grad_fp8, output_combine_grad_scale = paddle.incubate.nn.functional.fp8_quant_blockwise(
+                    output_combine_grad, output_scale_transpose=False, quant_method="1x128", input_transpose=False
+                )
+                output_grad._record_stream()
+                quant_event = None
+                if event_to_wait is not None:
+                    quant_event = deep_ep.get_event_from_custom_stream(custom_stream.stream_base)
+            return (output_combine_grad_fp8, output_combine_grad_scale), quant_event
         else:
-            return output_combine_grad
+            output_combine_grad = paddle.reshape(output_grad, self.output_combine_shape)
+            return output_combine_grad, None
 
 
 class FusionMlpNode:
