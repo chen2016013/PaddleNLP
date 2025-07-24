@@ -33,7 +33,7 @@ from .runtime import (
 from .utils import ceil_div, get_col_major_tma_aligned_tensor, get_num_sms
 
 # Todo: Use default stream to accelerate CPU time. Optimize here if use multistream to launch gemm kernel.
-global_stream = paddle.device.cuda.current_stream().cuda_stream
+global_stream = paddle.device.current_stream().stream_base.cuda_stream
 
 
 def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
