@@ -135,7 +135,7 @@ def wgrad_gemm_fp8_fp8_fp32_nt(
         "TENSOR_MAP_SCALES_A": tensor_map_scales_a,
         "TENSOR_MAP_SCALES_B": tensor_map_scales_b,
         "TENSOR_MAP_D": tensor_map_d,
-        "STREAM": paddle.device.cuda.current_stream().cuda_stream,
+        "STREAM": paddle.device.current_stream().stream_base.cuda_stream,
         "DEVICE_INDEX": out.place.gpu_device_id(),
     }
 
