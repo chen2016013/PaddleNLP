@@ -156,40 +156,13 @@ class Compiler:
 
     @classmethod
     def build(cls, name: str, runtime_cls: Type[Runtime], kwargs: Dict[str, Any] = None) -> Runtime:
+        code = runtime_cls.generate(kwargs)
         # Compiler flags
         flags = cls.flags()
+
         # Build signature
-        enable_sass_opt = cls.__version__() <= (12, 8) and not int(os.getenv("DG_JIT_DISABLE_FFMA_INTERLEAVE", 0))
-
-        def fast_dict_hash(kwargs: dict) -> str:
-            keys = [
-                "N",
-                "K",
-                "BLOCK_M",
-                "BLOCK_N",
-                "BLOCK_K",
-                "BLOCK_N_PADDING",
-                "SWIZZLE_D_MODE",
-                "NUM_GROUPS",
-                "NUM_STAGES",
-                "NUM_TMA_THREADS",
-                "NUM_MATH_THREADS_PER_GROUP",
-                "NUM_TMA_MULTICAST",
-                "IS_TMA_MULTICAST_ON_A",
-                "GEMM_TYPE",
-            ]
-            hashable = tuple((k, kwargs[k]) for k in keys)
-            return hash_to_hex(hash(hashable))
-
-        signature_parts = [
-            f"{name}",
-            f"{get_deep_gemm_version()}",
-            f"{cls.signature()}",
-            f"{flags}",
-            f"{enable_sass_opt}",
-            f"{fast_dict_hash(kwargs)}",
-        ]
-        signature = "$$".join(signature_parts)
+        enable_sass_opt = cls.__version__() <= (12, 8) and not int(os.getenv('DG_JIT_DISABLE_FFMA_INTERLEAVE', 0))
+        signature = f'{name}$${get_deep_gemm_version()}$${cls.signature()}$${flags}$${enable_sass_opt}$${code}'
         name = f"kernel.{name}.{hash_to_hex(signature)}"
         path = os.path.join(get_cache_dir(), name)
 
@@ -206,7 +179,6 @@ class Compiler:
         cubin_path = os.path.join(path, "kernel.cubin")
         tmp_cubin_path = os.path.join(make_tmp_dir(), f"nvcc.tmp.{str(uuid.uuid4())}.{hash_to_hex(cubin_path)}.cubin")
 
-        code = runtime_cls.generate(kwargs)
         start_time = time.time()
         cls.compile(name, code, tmp_cubin_path)
         end_time = time.time()
