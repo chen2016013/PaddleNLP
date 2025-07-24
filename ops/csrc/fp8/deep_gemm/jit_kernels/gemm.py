@@ -39,7 +39,7 @@ from .utils import (
 
 global_empty_tensor = paddle.empty([0], dtype=paddle.int32)
 # Todo: Use default stream to accelerate CPU time. Optimize here if use multistream to launch gemm kernel.
-global_stream = paddle.device.cuda.current_stream().cuda_stream
+global_stream = paddle.device.current_stream().stream_base.cuda_stream
 
 
 def is_tma_multicast_legal(
