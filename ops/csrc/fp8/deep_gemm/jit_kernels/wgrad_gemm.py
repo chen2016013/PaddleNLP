@@ -17,7 +17,7 @@
 # Licensed under the MIT License - https://github.com/deepseek-ai/DeepGEMM/blob/main/LICENSE
 
 from typing import List, Tuple
-
+import os
 import paddle
 
 from ..jit import FP8WGradGemmRuntime, build
@@ -38,7 +38,7 @@ from .utils import (
 
 
 def wgrad_gemm_fp8_fp8_fp32_nt(
-    lhs: Tuple[paddle.Tensor, paddle.Tensor], rhs: Tuple[paddle.Tensor, paddle.Tensor], out: paddle.Tensor
+    lhs: Tuple[paddle.Tensor, paddle.Tensor], rhs: Tuple[paddle.Tensor, paddle.Tensor], out: paddle.Tensor, num_sms: int = None
 ):
     """
     Perform a weight gradient GEMM with FP8 inputs and FP32 output, with 1x128 LHS scaling and 1x128 RHS scaling.
@@ -96,10 +96,13 @@ def wgrad_gemm_fp8_fp8_fp32_nt(
     aligned_k = ceil_div(k, 128) * 128
 
     # Auto-tuning with compilation
-    num_sms = get_num_sms()
+    if num_sms is None:
+        num_sms = get_num_sms()
     num_sms, block_m, block_n, num_stages, tma_multicast_config, smem_config = get_best_configs(
         m, n, aligned_k, 1, num_sms, is_fp32_out=True, is_wgrad=True
     )
+    if int(os.getenv("DG_JIT_KERNELS_DEBUG", 0)):
+        print(f"Auto-tuned wgrad_gemm_fp8_fp8_fp32_nt as num_sms={num_sms}, block_m={block_m}, block_n={block_n}")
     num_last_stages = ceil_div(k, 128) % num_stages
     block_k = 128
     num_tma_threads = 128
@@ -149,6 +152,7 @@ def k_grouped_wgrad_gemm_fp8_fp8_fp32_nt(
     rhs: Tuple[paddle.Tensor, paddle.Tensor],
     out: paddle.Tensor,
     batch_sizes: List[int],
+    num_sms: int = None,
 ):
     """
     Perform a k-grouped weight gradient GEMM with FP8 inputs and FP32 output, with 1x128 LHS scaling and 1x128 RHS scaling.
@@ -184,7 +188,7 @@ def k_grouped_wgrad_gemm_fp8_fp8_fp32_nt(
         rhs_slice = paddle.view(rhs[rhs_offset : rhs_offset + n * k], (n, k))
         lhs_scales_slice = lhs_scales[scales_offset : scales_offset + ceil_div(k, 128)]
         rhs_scales_slice = rhs_scales[scales_offset : scales_offset + ceil_div(k, 128)]
-        wgrad_gemm_fp8_fp8_fp32_nt((lhs_slice, lhs_scales_slice), (rhs_slice, rhs_scales_slice), out[i])
+        wgrad_gemm_fp8_fp8_fp32_nt((lhs_slice, lhs_scales_slice), (rhs_slice, rhs_scales_slice), out[i], num_sms)
 
         lhs_offset += m * k
         rhs_offset += n * k

@@ -18,6 +18,7 @@
 
 from functools import reduce
 from typing import Tuple
+import os
 
 import paddle
 
@@ -41,6 +42,7 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
     rhs: Tuple[paddle.Tensor, paddle.Tensor],
     out: paddle.Tensor,
     m_indices: paddle.Tensor,
+    num_sms: int = None,
 ) -> None:
     """
     Perform a grouped GEMM (contiguous format) with FP8 inputs and BF16 output, with 1x128 LHS scaling and 128x128 RHS scaling.
@@ -92,10 +94,13 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
         return
 
     # Auto-tuning with compilation
-    num_sms = get_num_sms()
+    if num_sms is None:
+        num_sms = get_num_sms()
     num_sms, block_m, block_n, num_stages, tma_multicast_config, smem_config = get_best_configs(
         m, n, k, 1, num_sms, is_grouped_contiguous=True
     )
+    if int(os.getenv("DG_JIT_KERNELS_DEBUG", 0)):
+        print(f"Auto-tuned m_grouped_gemm_fp8_fp8_bf16_nt_contiguous as num_sms={num_sms}, block_m={block_m}, block_n={block_n}")
     block_k = 128
     num_tma_threads = 128
     num_math_threads_per_group = 128
@@ -150,6 +155,7 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_masked(
     out: paddle.Tensor,
     masked_m: paddle.Tensor,
     expected_m: int,
+    num_sms: int = None,
 ) -> None:
     """
     Perform a grouped GEMM (masked format) with FP8 inputs and BF16 output, with 1x128 LHS scaling and 128x128 RHS scaling.
@@ -198,11 +204,13 @@ def m_grouped_gemm_fp8_fp8_bf16_nt_masked(
     assert rhs_scales.is_contiguous()
 
     # Auto-tuning with compilation
-    num_sms = get_num_sms()
+    if num_sms is None:
+        num_sms = get_num_sms()
     num_sms, block_m, block_n, num_stages, tma_multicast_config, smem_config = get_best_configs(
         expected_m, n, k, num_groups, num_sms, is_grouped_masked=True
     )
-
+    if int(os.getenv("DG_JIT_KERNELS_DEBUG", 0)):
+        print(f"Auto-tuned m_grouped_gemm_fp8_fp8_bf16_nt_masked as num_sms={num_sms}, block_m={block_m}, block_n={block_n}")
     # Extra checks for TMA store
     if num_groups > 1 and m > block_m:
         assert (

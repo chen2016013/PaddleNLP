@@ -19,6 +19,7 @@
 import math
 from functools import lru_cache
 from typing import Tuple
+import os
 
 import paddle
 
@@ -211,7 +212,7 @@ def get_best_configs(
 
 
 def gemm_fp8_fp8_bf16_nt(
-    lhs: Tuple[paddle.Tensor, paddle.Tensor], rhs: Tuple[paddle.Tensor, paddle.Tensor], out: paddle.Tensor
+    lhs: Tuple[paddle.Tensor, paddle.Tensor], rhs: Tuple[paddle.Tensor, paddle.Tensor], out: paddle.Tensor, num_sms: int = None
 ) -> None:
     """
     Perform a normal GEMM with FP8 inputs and BF16 output, with 1x128 LHS scaling and 128x128 RHS scaling.
@@ -259,8 +260,11 @@ def gemm_fp8_fp8_bf16_nt(
     aligned_k = ceil_div(k, 128) * 128
 
     # Auto-tuning with compilation
-    num_sms = get_num_sms()
+    if num_sms is None:
+        num_sms = get_num_sms()
     num_sms, block_m, block_n, num_stages, tma_multicast_config, smem_config = get_best_configs(m, n, k, 1, num_sms)
+    if int(os.getenv("DG_JIT_KERNELS_DEBUG", 0)):
+        print(f"Auto-tuned gemm_fp8_fp8_bf16_nt as num_sms={num_sms}, block_m={block_m}, block_n={block_n}")
     block_k = 128
     num_tma_threads = 128
     num_math_threads_per_group = 128
