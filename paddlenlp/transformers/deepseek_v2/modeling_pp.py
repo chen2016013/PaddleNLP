@@ -1189,9 +1189,15 @@ class DeepseekV2DecoderLayerPipe(DeepseekV2DecoderLayer):
             if self.mlp.using_flex_token:
                 if DSV3_USE_FP8_GEMM:
                     attn_and_gate_node = ScheduleNode(self.attn_compute_for_fusion, name="attn_and_gate_node")
+
+                    recompute_fwd_gate_up_ = 1 if self.layer_idx in self.config.recompute_fwd_gate_up_list else 0
+                    recompute_fwd_gate_up_ = (
+                        -1 if self.config.adaptive_remained_O1_recompute_ratio else recompute_fwd_gate_up_
+                    )
+
                     fp8_fusion_moe_node = FusionMoeNode(
                         self.mlp,
-                        recompute_fwd_gate_up=self.config.recompute_fwd_gate_up,
+                        recompute_fwd_gate_up=recompute_fwd_gate_up_,
                         is_split_group_gemm=self.config.is_split_group_gemm,
                         name="fp8_fusion_moe_node",
                     )
