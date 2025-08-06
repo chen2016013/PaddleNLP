@@ -255,7 +255,9 @@ class PostProcessNode(ScheduleNode):
                 self.shared_experts.w2,
             )
         else:
-            dx = FP8LinearFunctionBase.fp8_mlp_bwd(hidden_states_grad, self.x, self.shared_experts.w1, self.shared_experts.w2)
+            dx = FP8LinearFunctionBase.fp8_mlp_bwd(
+                hidden_states_grad, self.x, self.shared_experts.w1, self.shared_experts.w2
+            )
 
         self.x = None
 
@@ -918,8 +920,11 @@ class OverlapedFUsionScheduleNode:
             combine_forward_event.calc_stream_wait(self.forward_node.moe_group.id)
 
             final_out = self.forward_node.post_process_node.forward_without_residual(inputs)
-            final_out[:, :, :combine_fwd_out.shape[-1]] += combine_fwd_out  # 直接广播并相加
-            inputs =  final_out
+            if final_out.shape[-1] != combine_fwd_out.shape[-1]:
+                final_out[:, :, : combine_fwd_out.shape[-1]] += combine_fwd_out  # 直接广播并相加
+            else:
+                final_out += combine_fwd_out
+            inputs = final_out
             combine_fwd_out._record_stream()
 
         paddle.base.core.nvprof_nvtx_pop()
