@@ -256,7 +256,7 @@ class PostProcessNode(ScheduleNode):
             )
         else:
             dx = FP8LinearFunctionBase.fp8_mlp_bwd(
-                hidden_states_grad, self.x, self.shared_experts.w1, self.shared_experts.w2
+                hidden_states_grad, self.x, self.shared_experts.w1, self.shared_experts.w2, True
             )
 
         self.x = None
