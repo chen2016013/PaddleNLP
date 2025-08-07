@@ -506,6 +506,9 @@ class FusedNormFP8MLPFunction(paddle.autograd.PyLayer):
 
     @staticmethod
     def backward(ctx, do3):
+        # ===== reshape for deep_gemm, since deep_gemm only support 2D =====
+        do3_orig_shape = do3.shape
+        do3 = do3.reshape([-1, do3_orig_shape[-1]])
 
         # ===== recive saved tensors =====
         x, norm_w, w1, w2, norm_eps, x_orig_shape = ctx.saved_tensor()
@@ -513,8 +516,19 @@ class FusedNormFP8MLPFunction(paddle.autograd.PyLayer):
         # ===== recompute norm =====
         norm_output, invar = fused_ln.fused_rms_norm(x, norm_w, norm_eps)
 
+        # ===== compute x_t_fp8, x_t_scale for dw1 =====
+        norm_output = norm_output.reshape([-1, x_orig_shape[-1]])
+
+        x_fp8, x_scale, x_t_fp8, x_t_scale = paddle.incubate.nn.functional.fp8_quant_blockwise(
+            norm_output, output_scale_transpose=True, quant_method="1x128", input_transpose=True
+        )
+
         # ===== call func common_fp8_mlp_bwd =====
-        d_norm_output, dw1, dw2 = FP8LinearFunctionBase.fp8_mlp_bwd(do3, norm_output, w1, w2, False)
+        d_norm_output, dw1, dw2 = FP8LinearFunctionBase.common_fp8_mlp_bwd(do3, x_fp8, x_scale, x_t_fp8, x_t_scale, w1, w2)
+
+        # ===== reshape to origin shape =====
+        if len(x_orig_shape) > 2:
+            d_norm_output = d_norm_output.reshape([x_orig_shape[0], -1, d_norm_output.shape[-1]])
 
         # ===== compute norm grad =====
         dx, d_rms_norm_weight = fused_ln.fused_rms_norm_grad_func(x, norm_w, invar, d_norm_output, norm_eps)
