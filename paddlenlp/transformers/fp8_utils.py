@@ -46,6 +46,29 @@ __all__ = [
 ]
 
 
+def _get_fp8_weight_and_scale(weight, stacked=False, transpose=False):
+    """_get_fp8_weight_and_scale"""
+    if stacked:
+        if transpose:
+            fp8_weight, fp8_scale = weight.fp8_weight_stacked_transpose, weight.fp8_scale_stacked_transpose
+        else:
+            fp8_weight, fp8_scale = weight.fp8_weight_stacked, weight.fp8_scale_stacked
+    else:
+        if transpose:
+            fp8_weight, fp8_scale = weight.fp8_weight_transpose, weight.fp8_scale_transpose
+        else:
+            fp8_weight, fp8_scale = weight.fp8_weight, weight.fp8_scale
+    return fp8_weight, fp8_scale
+
+
+def fused_stack_quant(expert_weight_list, transpose=False):
+    if hasattr(expert_weight_list[0], "fp8_weight_stacked"):
+        w, scale = _get_fp8_weight_and_scale(expert_weight_list[0], stacked=True, transpose=transpose)
+    else:
+        w, scale = paddle.incubate.nn.functional.fused_stack_transpose_quant(expert_weight_list, transpose=transpose)
+    return w, scale
+
+
 class FP8LinearFunctionBase:
     @staticmethod
     def dequantize_fp8_to_fp32(fp8_tensor, scale):
@@ -524,7 +547,9 @@ class FusedNormFP8MLPFunction(paddle.autograd.PyLayer):
         )
 
         # ===== call func common_fp8_mlp_bwd =====
-        d_norm_output, dw1, dw2 = FP8LinearFunctionBase.common_fp8_mlp_bwd(do3, x_fp8, x_scale, x_t_fp8, x_t_scale, w1, w2)
+        d_norm_output, dw1, dw2 = FP8LinearFunctionBase.common_fp8_mlp_bwd(
+            do3, x_fp8, x_scale, x_t_fp8, x_t_scale, w1, w2
+        )
 
         # ===== reshape to origin shape =====
         if len(x_orig_shape) > 2:
@@ -723,7 +748,7 @@ class FP8GroupGemmMlpFunctionNode:
         if not self.is_split_group_gemm:
             self.m_indices = self.gen_m_indices(tokens_per_expert)
         # concat w1, shape is [num_groups, n, k]
-        w1_t_quant, w1_t_scale = paddle.incubate.nn.functional.fused_stack_transpose_quant(expert_w1, transpose=True)
+        w1_t_quant, w1_t_scale = fused_stack_quant(expert_w1, transpose=True)
         w1_t_quant = w1_t_quant.reshape([num_expert, -1, w1_t_quant.shape[-1]])
         w1_t_scale = w1_t_scale.reshape([num_expert, -1, w1_t_scale.shape[-1]])
 
@@ -765,7 +790,7 @@ class FP8GroupGemmMlpFunctionNode:
         [m_sum, k] = [m_sum, n] * [num_groups, n, k]
         """
         # concat and transpose w2
-        w2_quant, w2_scale = paddle.incubate.nn.functional.fused_stack_transpose_quant(expert_w2, transpose=True)
+        w2_quant, w2_scale = fused_stack_quant(expert_w2, transpose=True)
         w2_quant = w2_quant.reshape([num_expert, -1, w2_quant.shape[-1]])
         w2_scale = w2_scale.reshape([num_expert, -1, w2_scale.shape[-1]])
 
@@ -801,9 +826,7 @@ class FP8GroupGemmMlpFunctionNode:
         [m_sum, n] = [m_sum, k] * [num_groups, k, n]
         """
         # recompute concated_w2_2d
-        bw_w2_quant, bw_w2_scale = paddle.incubate.nn.functional.fused_stack_transpose_quant(
-            expert_w2, transpose=False
-        )
+        bw_w2_quant, bw_w2_scale = fused_stack_quant(expert_w2, transpose=False)
         bw_w2_quant = bw_w2_quant.reshape([len(expert_w2), -1, bw_w2_quant.shape[-1]])
         bw_w2_scale = bw_w2_scale.reshape([len(expert_w2), -1, bw_w2_scale.shape[-1]])
 
@@ -849,9 +872,7 @@ class FP8GroupGemmMlpFunctionNode:
         [m_sum, k] = [m_sum, n] * [num_groups, n, k]
         """
         # recompute concated_w1_t
-        bw_w1_quant, bw_w1_scale = paddle.incubate.nn.functional.fused_stack_transpose_quant(
-            expert_w1, transpose=False
-        )
+        bw_w1_quant, bw_w1_scale = fused_stack_quant(expert_w1, transpose=False)
         bw_w1_quant = bw_w1_quant.reshape([len(expert_w1), -1, bw_w1_quant.shape[-1]])
         bw_w1_scale = bw_w1_scale.reshape([len(expert_w1), -1, bw_w1_scale.shape[-1]])
 
