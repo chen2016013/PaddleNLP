@@ -778,8 +778,6 @@ class FusedNormGateFunc(paddle.autograd.PyLayer):
         invar = FusedNormGateFunc._current_invar
         if norm_output is None or invar is None:
             norm_output, invar = fused_ln.fused_rms_norm(x, rms_norm_weight, eps)
-        else:
-        # norm_output, invar = fused_ln.fused_rms_norm(x, rms_norm_weight, eps)
         d_norm_output_linear, d_moe_gate_weight = paddle._C_ops.matmul_grad(
             cast_if_needed(norm_output, ctx.dtype),
             cast_if_needed(moe_gate_weight, ctx.dtype),
