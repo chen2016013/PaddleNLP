@@ -188,10 +188,10 @@ class PostProcessNode(ScheduleNode):
             if self.shared_experts is not None:
                 if self.using_post_norm_recompute:
                     _, _, shared_expert_output = FP8LinearFunctionBase.fp8_mlp_fwd(
-                        norm_output, self.shared_experts.w1, self.shared_experts.w2
+                        norm_out, self.shared_experts.w1, self.shared_experts.w2
                     )
-                    norm_output = None
-                    del norm_output
+                    norm_out = None
+                    del norm_out
                 else:
                     _, _, shared_expert_output = FP8LinearFunctionBase.fp8_mlp_fwd(
                         hidden_states, self.shared_experts.w1, self.shared_experts.w2
@@ -728,15 +728,18 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
         return inputs
 
     def post_process_backward(self, output_grad, event_to_wait=None):
-        if self.using_post_norm_recompute:
-            grad, norm_out, invar = self.post_process_node.backward(output_grad)
-        else:
-            grad = self.post_process_node.backward(output_grad)
+        grad = self.post_process_node.backward(output_grad)
 
-        if self.send_mtp_embed:
-            inputs_embeds_mtp_grad, hidden_states_grad, residual_grad, l_aux_grad, final_hidden_states_grad = grad
+        if self.using_post_norm_recompute:
+            if self.send_mtp_embed:
+                inputs_embeds_mtp_grad, hidden_states_grad, residual_grad, l_aux_grad, final_hidden_states_grad, norm_out, invar = grad
+            else:
+                hidden_states_grad, residual_grad, l_aux_grad, final_hidden_states_grad, norm_out, invar = grad
         else:
-            hidden_states_grad, residual_grad, l_aux_grad, final_hidden_states_grad = grad
+            if self.send_mtp_embed:
+                inputs_embeds_mtp_grad, hidden_states_grad, residual_grad, l_aux_grad, final_hidden_states_grad = grad
+            else:
+                hidden_states_grad, residual_grad, l_aux_grad, final_hidden_states_grad = grad
 
         output_combine_grad, quant_event = self.fp8_fusion_moe_node.combine_quant_node.backward(
             final_hidden_states_grad, event_to_wait
@@ -812,18 +815,12 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
             else:
                 hidden_states_grad, residual_grad, l_aux_grad, hidden_states_out_grad, norm_out, invar = output_grad
         else:
-<<<<<<< Updated upstream
-            hidden_states_grad, residual_grad, l_aux_grad, hidden_states_out_grad = output_grad
-        hs_dispatched_grad, dispatched_probs_grad = self.fp8_fusion_moe_node.mlp_node.backward(hidden_states_out_grad)
-=======
             if self.send_mtp_embed:
                 inputs_embeds_mtp_grad, hidden_states_grad, residual_grad, l_aux_grad, hidden_states_out_grad = output_grad
             else:
                 hidden_states_grad, residual_grad, l_aux_grad, hidden_states_out_grad = output_grad
-        hs_dispatched_grad, dispatched_probs_grad = self.fp8_fusion_moe_node.mlp_node.backward(
-            hidden_states_out_grad, with_dw=False
-        )
->>>>>>> Stashed changes
+        hs_dispatched_grad, dispatched_probs_grad = self.fp8_fusion_moe_node.mlp_node.backward(hidden_states_out_grad)
+
 
         ret = (hidden_states_grad, residual_grad, l_aux_grad, hs_dispatched_grad, dispatched_probs_grad)
         ret = (inputs_embeds_mtp_grad, *ret) if self.send_mtp_embed else ret
@@ -918,7 +915,10 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
         )
         output_grad = (inputs_embeds_mtp_grad, *output_grad) if self.send_mtp_embed else output_grad
 
-        with TemporaryVarContext(norm_output, invar):
+        if self.using_post_norm_recompute:
+            with TemporaryVarContext(norm_out, invar):
+                output_grad = self.attn_and_gate_node.backward(output_grad)
+        else:
             output_grad = self.attn_and_gate_node.backward(output_grad)
         return output_grad
 

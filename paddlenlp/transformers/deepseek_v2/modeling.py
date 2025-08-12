@@ -752,13 +752,13 @@ class FusedNormGateFunc(paddle.autograd.PyLayer):
 
     @classmethod
     def set_temporary_vars(cls, norm_output, invar):
-        cls._current_norm_output = norm_output
-        cls._current_invar = invar
+        FusedNormGateFunc._current_norm_output = norm_output
+        FusedNormGateFunc._current_invar = invar
 
     @classmethod
     def clear_temporary_vars(cls):
-        cls._current_norm_output = None
-        cls._current_invar = None
+        FusedNormGateFunc._current_norm_output = None
+        FusedNormGateFunc._current_invar = None
 
     @staticmethod
     def forward(ctx, x, rms_norm_weight, moe_gate_weight, eps):
@@ -777,8 +777,8 @@ class FusedNormGateFunc(paddle.autograd.PyLayer):
         norm_output = FusedNormGateFunc._current_norm_output
         invar = FusedNormGateFunc._current_invar
         if norm_output is None or invar is None:
-            raise RuntimeError("norm_output and invar must be set before backward!")
-
+            norm_output, invar = fused_ln.fused_rms_norm(x, rms_norm_weight, eps)
+        else:
         # norm_output, invar = fused_ln.fused_rms_norm(x, rms_norm_weight, eps)
         d_norm_output_linear, d_moe_gate_weight = paddle._C_ops.matmul_grad(
             cast_if_needed(norm_output, ctx.dtype),
