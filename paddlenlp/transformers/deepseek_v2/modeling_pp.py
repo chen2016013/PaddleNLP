@@ -749,7 +749,7 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
 
         ret = (hidden_states_grad, residual_grad, l_aux_grad, hidden_states_out_grad)
         ret = (inputs_embeds_mtp_grad, *ret) if self.send_mtp_embed else ret
-        ret = (*ret, norm_out, invar) if self.send_mtp_embed else ret
+        ret = (*ret, norm_out, invar) if self.using_post_norm_recompute else ret
         return ret
 
     def mlp_backward(self, output_grad):
