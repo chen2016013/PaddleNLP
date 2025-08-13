@@ -172,22 +172,25 @@ class PostProcessNode(ScheduleNode):
 
         if isinstance(inputs, list):
             inputs = tuple(inputs)
-
-        if self.send_mtp_embed:
-            (inputs_embeds_mtp, hidden_states, residual, l_aux, final_hidden_states) = inputs
+        if self.using_post_norm_recompute:
+            if self.send_mtp_embed:
+                (inputs_embeds_mtp, hidden_states, residual, l_aux, final_hidden_states, norm_out) = inputs
+            else:
+                (hidden_states, residual, l_aux, final_hidden_states, norm_out) = inputs
         else:
-            (hidden_states, residual, l_aux, final_hidden_states) = inputs
+            if self.send_mtp_embed:
+                (inputs_embeds_mtp, hidden_states, residual, l_aux, final_hidden_states) = inputs
+            else:
+                (hidden_states, residual, l_aux, final_hidden_states) = inputs
 
         with paddle.no_grad():
             if self.shared_experts is not None:
                 if self.using_post_norm_recompute:
-                    shared_expert_output = FP8LinearFunctionBase.fp8_mlp_fwd_norm_rc(
-                        hidden_states,
-                        self.shared_experts.norm_weight,
-                        self.shared_experts.norm_eps,
-                        self.shared_experts.w1,
-                        self.shared_experts.w2,
+                    _, _, shared_expert_output = FP8LinearFunctionBase.fp8_mlp_fwd(
+                        norm_out, self.shared_experts.w1, self.shared_experts.w2
                     )
+                    norm_out = None
+                    del norm_out
                 else:
                     _, _, shared_expert_output = FP8LinearFunctionBase.fp8_mlp_fwd(
                         hidden_states, self.shared_experts.w1, self.shared_experts.w2
@@ -211,21 +214,25 @@ class PostProcessNode(ScheduleNode):
         if isinstance(inputs, list):
             inputs = tuple(inputs)
 
-        if self.send_mtp_embed:
-            (inputs_embeds_mtp, hidden_states, residual, l_aux, final_hidden_states) = inputs
+        if self.using_post_norm_recompute:
+            if self.send_mtp_embed:
+                (inputs_embeds_mtp, hidden_states, residual, l_aux, final_hidden_states, norm_out) = inputs
+            else:
+                (hidden_states, residual, l_aux, final_hidden_states, norm_out) = inputs
         else:
-            (hidden_states, residual, l_aux, final_hidden_states) = inputs
+            if self.send_mtp_embed:
+                (inputs_embeds_mtp, hidden_states, residual, l_aux, final_hidden_states) = inputs
+            else:
+                (hidden_states, residual, l_aux, final_hidden_states) = inputs
 
         with paddle.no_grad():
             if self.shared_experts is not None:
                 if self.using_post_norm_recompute:
-                    shared_expert_output = FP8LinearFunctionBase.fp8_mlp_fwd_norm_rc(
-                        hidden_states,
-                        self.shared_experts.norm_weight,
-                        self.shared_experts.norm_eps,
-                        self.shared_experts.w1,
-                        self.shared_experts.w2,
+                    _, _, shared_expert_output = FP8LinearFunctionBase.fp8_mlp_fwd(
+                        norm_out, self.shared_experts.w1, self.shared_experts.w2
                     )
+                    norm_out = None
+                    del norm_out
                 else:
                     _, _, shared_expert_output = FP8LinearFunctionBase.fp8_mlp_fwd(
                         hidden_states, self.shared_experts.w1, self.shared_experts.w2
@@ -578,23 +585,35 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
             hs_2d, token_indices, token_probs = self.fp8_fusion_moe_node.dispatch_quant_node.forward(
                 norm_out, probs, routing_map
             )
+            # common return values
+            ret = (hidden_states, residual, l_aux, hs_2d, token_indices, token_probs, norm_out)
+
+            # append mtp embed if needed
+            ret = (inputs_embeds_mtp, *ret) if self.send_mtp_embed else ret
+            return ret
         else:
             hs_2d, token_indices, token_probs = self.fp8_fusion_moe_node.dispatch_quant_node.forward(
                 hidden_states, probs, routing_map
             )
 
-        # common return values
-        ret = (hidden_states, residual, l_aux, hs_2d, token_indices, token_probs)
+            # common return values
+            ret = (hidden_states, residual, l_aux, hs_2d, token_indices, token_probs)
 
-        # append mtp embed if needed
-        ret = (inputs_embeds_mtp, *ret) if self.send_mtp_embed else ret
-        return ret
+            # append mtp embed if needed
+            ret = (inputs_embeds_mtp, *ret) if self.send_mtp_embed else ret
+            return ret
 
     def dispatch_forward(self, inputs, previous_event=None, async_finish=False, allocate_on_comm_stream=False):
-        if self.send_mtp_embed:
-            inputs_embeds_mtp, hidden_states, residual, l_aux, hs_2d, token_indices, token_probs = inputs
+        if self.using_post_norm_recompute:
+            if self.send_mtp_embed:
+                inputs_embeds_mtp, hidden_states, residual, l_aux, hs_2d, token_indices, token_probs, norm_out = inputs
+            else:
+                hidden_states, residual, l_aux, hs_2d, token_indices, token_probs, norm_out = inputs
         else:
-            hidden_states, residual, l_aux, hs_2d, token_indices, token_probs = inputs
+            if self.send_mtp_embed:
+                inputs_embeds_mtp, hidden_states, residual, l_aux, hs_2d, token_indices, token_probs = inputs
+            else:
+                hidden_states, residual, l_aux, hs_2d, token_indices, token_probs = inputs
 
         (hs_dispatched, dispatched_indices, dispatched_probs,) = self.fp8_fusion_moe_node.dispatch_node.forward(
             hs_2d,
@@ -609,21 +628,37 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
 
         # append mtp embed if needed
         ret = (inputs_embeds_mtp, *ret) if self.send_mtp_embed else ret
+        ret = (*ret, norm_out) if self.using_post_norm_recompute else ret
         return ret
 
     def mlp_forward(self, inputs):
-        if self.send_mtp_embed:
-            (
-                inputs_embeds_mtp,
-                hidden_states,
-                residual,
-                l_aux,
-                hs_dispatched,
-                dispatched_indices,
-                dispatched_probs,
-            ) = inputs
+        if self.using_post_norm_recompute:
+            if self.send_mtp_embed:
+                (
+                    inputs_embeds_mtp,
+                    hidden_states,
+                    residual,
+                    l_aux,
+                    hs_dispatched,
+                    dispatched_indices,
+                    dispatched_probs,
+                    norm_out,
+                ) = inputs
+            else:
+                hidden_states, residual, l_aux, hs_dispatched, dispatched_indices, dispatched_probs, norm_out = inputs
         else:
-            hidden_states, residual, l_aux, hs_dispatched, dispatched_indices, dispatched_probs = inputs
+            if self.send_mtp_embed:
+                (
+                    inputs_embeds_mtp,
+                    hidden_states,
+                    residual,
+                    l_aux,
+                    hs_dispatched,
+                    dispatched_indices,
+                    dispatched_probs,
+                ) = inputs
+            else:
+                hidden_states, residual, l_aux, hs_dispatched, dispatched_indices, dispatched_probs = inputs
 
         hidden_states_out = self.fp8_fusion_moe_node.mlp_node.forward(
             hs_dispatched, dispatched_indices, dispatched_probs
@@ -632,13 +667,20 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
 
         # append mtp embed if needed
         ret = (inputs_embeds_mtp, *ret) if self.send_mtp_embed else ret
+        ret = (*ret, norm_out) if self.using_post_norm_recompute else ret
         return ret
 
     def combine_forward(self, inputs, async_finish=False, previous_event=None, allocate_on_comm_stream=False):
-        if self.send_mtp_embed:
-            (inputs_embeds_mtp, hidden_states, residual, l_aux, hidden_states_out) = inputs
+        if self.using_post_norm_recompute:
+            if self.send_mtp_embed:
+                (inputs_embeds_mtp, hidden_states, residual, l_aux, hidden_states_out, norm_out) = inputs
+            else:
+                (hidden_states, residual, l_aux, hidden_states_out, norm_out) = inputs
         else:
-            (hidden_states, residual, l_aux, hidden_states_out) = inputs
+            if self.send_mtp_embed:
+                (inputs_embeds_mtp, hidden_states, residual, l_aux, hidden_states_out) = inputs
+            else:
+                (hidden_states, residual, l_aux, hidden_states_out) = inputs
 
         output_combine = self.fp8_fusion_moe_node.combine_node.forward(
             hidden_states_out,
@@ -651,17 +693,26 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
 
         # append mtp embed if needed
         ret = (inputs_embeds_mtp, *ret) if self.send_mtp_embed else ret
+        ret = (*ret, norm_out) if self.using_post_norm_recompute else ret
         return ret
 
     def post_process_forward(self, inputs, with_residual=True):
-        if self.send_mtp_embed:
-            (inputs_embeds_mtp, hidden_states, residual, l_aux, output_combine) = inputs
+        if self.using_post_norm_recompute:
+            if self.send_mtp_embed:
+                (inputs_embeds_mtp, hidden_states, residual, l_aux, output_combine, norm_out) = inputs
+            else:
+                (hidden_states, residual, l_aux, output_combine, norm_out) = inputs
         else:
-            (hidden_states, residual, l_aux, output_combine) = inputs
+            if self.send_mtp_embed:
+                (inputs_embeds_mtp, hidden_states, residual, l_aux, output_combine) = inputs
+            else:
+                (hidden_states, residual, l_aux, output_combine) = inputs
         final_hidden_states = self.fp8_fusion_moe_node.combine_quant_node.forward(output_combine)
 
         inputs = (hidden_states, residual, l_aux, final_hidden_states)
         inputs = (inputs_embeds_mtp, *inputs) if self.send_mtp_embed else inputs
+        inputs = (*inputs, norm_out) if self.using_post_norm_recompute else inputs
+
 
         if with_residual:
             inputs = self.post_process_node.forward(inputs)

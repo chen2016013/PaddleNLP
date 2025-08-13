@@ -412,14 +412,6 @@ class FP8LinearFunctionBase:
         return x_fp8, x_scale, o3
 
     @staticmethod
-    def fp8_mlp_fwd_norm_rc(x, norm_w, norm_eps, w1, w2):
-        # ===== compute norm_output =====
-        norm_output, _ = fused_ln.fused_rms_norm(x, norm_w, norm_eps)
-        # ===== compute fp8_mlp_fwd =====
-        _, _, o3 = FP8LinearFunctionBase.fp8_mlp_fwd(norm_output, w1, w2)
-        return o3
-
-    @staticmethod
     def fp8_mlp_bwd(do3, x, w1, w2, apply_backward_hook=False):
         do3_orig_shape = do3.shape
         do3 = do3.reshape([-1, do3_orig_shape[-1]])
