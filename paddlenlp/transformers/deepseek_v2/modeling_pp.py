@@ -1031,7 +1031,7 @@ class OverlapedFUsionScheduleNode:
 
         combine_forward_event = deep_ep.get_event_from_comm_stream(self.forward_node.moe_group.id)
 
-        combine_fwd_out = inputs[-1]
+        combine_fwd_out = inputs[-2] if self.using_post_norm_recompute else inputs[-1]
 
         if pp_stream is not None:
             send_recv_stream = paddle.device.Stream(stream_base=pp_stream)
