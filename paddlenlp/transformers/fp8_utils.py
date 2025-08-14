@@ -412,14 +412,6 @@ class FP8LinearFunctionBase:
         return x_fp8, x_scale, o3
 
     @staticmethod
-    def fp8_mlp_fwd_norm_rc(x, norm_w, norm_eps, w1, w2):
-        # ===== compute norm_output =====
-        norm_output, _ = fused_ln.fused_rms_norm(x, norm_w, norm_eps)
-        # ===== compute fp8_mlp_fwd =====
-        _, _, o3 = FP8LinearFunctionBase.fp8_mlp_fwd(norm_output, w1, w2)
-        return o3
-
-    @staticmethod
     def fp8_mlp_bwd(do3, x, w1, w2, apply_backward_hook=False):
         do3_orig_shape = do3.shape
         do3 = do3.reshape([-1, do3_orig_shape[-1]])
@@ -453,22 +445,10 @@ class FP8LinearFunctionBase:
         # ===== compute fp8_mlp_fwd =====
         d_norm_output = FP8LinearFunctionBase.fp8_mlp_bwd(do3, norm_output, w1, w2, True)
 
-        # ===== compute norm grad =====
-        dx, d_rms_norm_weight = fused_ln.fused_rms_norm_grad_func(x, norm_w, invar, d_norm_output, norm_eps)
-
-        if hasattr(norm_w, "main_grad"):
-            if norm_w.main_grad is None:
-                norm_w.main_grad = paddle.zeros(shape=norm_w.shape, dtype=paddle.float32)
-            norm_w.main_grad += d_rms_norm_weight
-        else:
-            if norm_w.grad is None:
-                norm_w.grad = paddle.zeros(shape=norm_w.shape, dtype=paddle.float32)
-            norm_w.grad += d_rms_norm_weight
-
         if hasattr(norm_w, "_apply_backward_hook"):
             norm_w._apply_backward_hook()
 
-        return dx
+        return d_norm_output, norm_output, invar
 
 
 class FP8LinearFunction(paddle.autograd.PyLayer):
