@@ -50,6 +50,22 @@ __all__ = [
 ]
 
 
+def set_parameter_color(
+    parameters, color, group=None, offline_quant_expert_weight=True, clear_origin_weight_when_offline_quant=True
+):
+    if offline_quant_expert_weight and clear_origin_weight_when_offline_quant:
+        if group is None:
+            for p in parameters:
+                if hasattr(p, "color") and p.color is not None:
+                    continue
+                setattr(p, "color", {"color": color})
+        else:
+            for p in parameters:
+                if hasattr(p, "color") and p.color is not None:
+                    continue
+                setattr(p, "color", {"color": color, "group": group})
+
+
 def extract_first_if_tuple(x):
     return x[0] if isinstance(x, tuple) else x
 
@@ -601,6 +617,7 @@ class FP8KeepXLinear(paddle.nn.Layer):
             dtype="bfloat16",
             is_bias=False,
         )
+        set_parameter_color([self.weight], "attn_out_project")
 
     def fp8_quant_weight(self):
         cache_fp8_weight(self.weight)
