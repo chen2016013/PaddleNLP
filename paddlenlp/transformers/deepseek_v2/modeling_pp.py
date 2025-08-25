@@ -2023,6 +2023,27 @@ class DeepseekV2ForCausalLMPipe(PipelinePretrainedModel, PipelineLayer):
                     ret.append(recompute_fwd_gate_up_list[i] + k)
             return ret
 
+        def compute_recompute_fa3_list(pp_nums, all_dl_nums, recompute_fa3):
+            all_layers_nums = all_dl_nums + 4  # embedding, rms, lm_head, mtp
+            segment_size = all_layers_nums // pp_nums
+            recompute_fa3_list = [0]
+            for idx in range(segment_size - 1, all_dl_nums, segment_size):
+                recompute_fa3_list.append(idx)
+
+            # If `recompute_fa3` is a Boolean value and is True, means all O1 will be recomputed.
+            # Otherwise `recompute_fa3` should be an integer representing how many O1 are recomputed.
+            assert isinstance(recompute_fa3, (int, bool))
+            if type(recompute_fa3) is bool:
+                enable_k_o1_rc = segment_size if recompute_fa3 is True else 0
+            else:
+                enable_k_o1_rc = recompute_fa3
+
+            ret = []
+            for i in range(len(recompute_fa3_list)):
+                for k in range(min(segment_size, enable_k_o1_rc)):
+                    ret.append(recompute_fa3_list[i] + k)
+            return ret
+
         pp_nums = (
             self.config["pipeline_parallel_degree"] * 2
             if self.config.use_dualpipev
@@ -2034,7 +2055,11 @@ class DeepseekV2ForCausalLMPipe(PipelinePretrainedModel, PipelineLayer):
             self.config.first_k_dense_replace,
             self.config.recompute_fwd_gate_up,
         )
+        recompute_fa3_list = compute_recompute_fa3_list(
+            pp_nums, self.config.num_hidden_layers, self.config.recompute_fa3
+        )
 
+        logger.info(f"recompute_fa3_list: {recompute_fa3_list}")
         logger.info(f"recompute_fwd_gate_up_list: {recompute_fwd_gate_up_list}")
         config.recompute_fwd_gate_up_list = recompute_fwd_gate_up_list
 
@@ -2045,6 +2070,7 @@ class DeepseekV2ForCausalLMPipe(PipelinePretrainedModel, PipelineLayer):
                     config=config,
                     layer_idx=i,
                     layerwise_recompute=i not in self.no_recompute_layers,
+                    recompute_fa3=i in recompute_fa3_list,
                 ),
                 f"{self._base_model.base_model_prefix}.layers.{i}",
             )
