@@ -1118,7 +1118,11 @@ class OverlapedFUsionScheduleNode:
                 combine_forward_event.current_stream_wait()
                 final_out_event.current_stream_wait()
 
-                inputs = final_out + combine_fwd_out
+                if final_out.shape[-1] != combine_fwd_out.shape[-1]:
+                    final_out[:, :, : combine_fwd_out.shape[-1]] += combine_fwd_out  # 直接广播并相加
+                else:
+                    final_out += combine_fwd_out
+                inputs = final_out
 
                 final_out._record_stream()
                 combine_fwd_out._record_stream()
@@ -1164,9 +1168,7 @@ class OverlapedDenseFusionScheduleNode:
         assert isinstance(forward_node, FusionFp8DecoderLayerNode) or isinstance(
             backward_node, FusionFp8DecoderLayerNode
         )
-        assert isinstance(forward_node, DenseDecoderLayerNode) or isinstance(
-            backward_node, DenseDecoderLayerNode
-        )
+        assert isinstance(forward_node, DenseDecoderLayerNode) or isinstance(backward_node, DenseDecoderLayerNode)
         self.forward_node = forward_node
         self.backward_node = backward_node
         self.name = name
@@ -1231,9 +1233,7 @@ class OverlapedDenseFusionScheduleNode:
             paddle.base.core.nvprof_nvtx_pop()  # moe_mlp
 
             paddle.base.core.nvprof_nvtx_push("dense_attn_moe_combine")
-            inputs = self.forward_node.combine_forward(
-                inputs, async_finish=True, allocate_on_comm_stream=True
-            )
+            inputs = self.forward_node.combine_forward(inputs, async_finish=True, allocate_on_comm_stream=True)
             combine_fw_event = deep_ep.get_event_from_comm_stream(self.forward_node.moe_group.id)
             output_grad = self.backward_node.attn_node.backward(output_grad)
             combine_fw_event.calc_stream_wait(self.forward_node.moe_group.id)
@@ -1252,7 +1252,7 @@ class OverlapedDenseFusionScheduleNode:
 def build_overlapped_nodes(forward_chunk, backward_chunk):
     overlap_element_class = (
         FusionFp8DecoderLayerNode if DSV3_USE_FP8_GEMM else DecoderLayerNode,
-        DenseDecoderLayerNode
+        DenseDecoderLayerNode,
     )
     forward_decoder_layer_num = 0
     backward_decoder_layer_num = 0
@@ -1840,11 +1840,7 @@ class DeepseekV2MTPLayerPipe(DeepseekV2MTPLayer):
     def build_schedule_node(self):
         if isinstance(self.mlp, DeepseekV2MoE):
             self.mlp.update_flex_token()
-            if (
-                self.mlp.using_flex_token and
-                DSV3_USE_FP8_GEMM and
-                self.config.num_nextn_predict_layers == 1
-            ):
+            if self.mlp.using_flex_token and DSV3_USE_FP8_GEMM and self.config.num_nextn_predict_layers == 1:
                 prev_send_mtp_embed = self.config.send_mtp_embed
                 self.config.send_mtp_embed = True  # must be True in MTP node
 
