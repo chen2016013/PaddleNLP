@@ -33,6 +33,7 @@ try:
     from paddle.distributed.fleet.meta_parallel.zero_bubble_utils import EventStore
 except ImportError:
     EventStore = None
+
 from paddle.distributed.fleet.recompute.recompute import recompute
 from paddle.distributed.fleet.utils.sequence_parallel_utils import ScatterOp
 
@@ -598,6 +599,7 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
         mlp_layer,
         send_mtp_embed,
         using_post_norm_recompute=False,
+        stepped_recompute_fwd_gate_up=False,
         name="",
     ):
         self.attn_and_gate_node = attn_and_gate_node
@@ -606,6 +608,7 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
         self.send_mtp_embed = send_mtp_embed
 
         self.using_post_norm_recompute = using_post_norm_recompute
+        self.stepped_recompute_fwd_gate_up = stepped_recompute_fwd_gate_up
         self.name = name
 
         self.moe_group = mlp_layer.moe_group
@@ -1058,6 +1061,8 @@ class FusionFp8DecoderLayerNode(ScheduleNode):
         return output_grad, event_to_wait
 
     def forward(self, inputs):
+        if self.stepped_recompute_fwd_gate_up:
+            self.fp8_fusion_moe_node.mlp_node.set_recompute_fwd_gate_up(True)
         inputs = self.attn_forward(inputs)
         inputs = self.dispatch_forward(inputs)
         inputs = self.mlp_forward(inputs)
@@ -1820,6 +1825,7 @@ class DeepseekV2DecoderLayerPipe(DeepseekV2DecoderLayer):
                         mlp_layer=self.mlp,
                         send_mtp_embed=self.config.send_mtp_embed,
                         using_post_norm_recompute=self.config.using_post_norm_recompute,
+                        stepped_recompute_fwd_gate_up=self.config.stepped_recompute_fwd_gate_up,
                         name="FusionFp8DecoderLayerNode",
                     )
                 else:
